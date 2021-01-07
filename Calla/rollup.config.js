@@ -1,21 +1,11 @@
-import { nodeResolve } from "@rollup/plugin-node-resolve";
+import { makeBundles, warnings } from "my-rollup";
 
-export default [{
-    input: "src/index.js",
-    plugins: [
-        nodeResolve()
-    ],
-    output: [{
-        format: "es",
-        sourcemap: true,
-        file: "dist/calla.js"
-    }, {
-        format: "es",
-        sourcemap: true,
-        file: "../Calla-Site/scripts/lib/calla.js"
-    }, {
-        format: "cjs",
-        sourcemap: true,
-        file: "dist/calla.cjs.js"
-    }]
-}];
+export default makeBundles("calla", "index.js", "dist", "iife", {
+    output: {
+        name: "Calla"
+    },
+    surpressions: [
+        warnings.and(warnings.isInModule(/lib-jitsi-meet\.min\.js$/), warnings.isEval),
+        warnings.and(warnings.isInModule(/@microsoft[\/\\]signalr[\/\\]/), warnings.isThisUndefined)
+    ]
+});
