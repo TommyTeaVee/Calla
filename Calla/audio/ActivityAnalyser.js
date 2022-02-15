@@ -2,7 +2,7 @@ import { TypedEventBase } from "kudzu/events/EventBase";
 import { clamp } from "kudzu/math/clamp";
 import { isGoodNumber } from "kudzu/typeChecks";
 import { AudioActivityEvent } from "./AudioActivityEvent";
-import { BaseNode } from "./spatializers/nodes/BaseNode";
+import { connect, disconnect } from "./GraphVisualizer";
 const audioActivityEvt = new AudioActivityEvent();
 const activityCounterMin = 0;
 const activityCounterMax = 60;
@@ -21,10 +21,16 @@ function analyserFrequencyAverage(analyser, frequencies, minHz, maxHz, bufferSiz
     return count === 0 ? 0 : (sum / count);
 }
 export class ActivityAnalyser extends TypedEventBase {
+    source;
+    id;
+    bufferSize;
+    buffer;
+    wasActive = false;
+    activityCounter;
+    analyser = null;
     constructor(source, audioContext, bufferSize) {
         super();
-        this.wasActive = false;
-        this.analyser = null;
+        this.source = source;
         if (!isGoodNumber(bufferSize)
             || bufferSize <= 0) {
             throw new Error("Buffer size must be greater than 0");
@@ -35,12 +41,12 @@ export class ActivityAnalyser extends TypedEventBase {
         this.wasActive = false;
         this.activityCounter = 0;
         const checkSource = () => {
-            if (source.spatializer instanceof BaseNode
-                && source.spatializer.source) {
+            if (source.spatializer
+                && source.source) {
                 this.analyser = audioContext.createAnalyser();
                 this.analyser.fftSize = 2 * this.bufferSize;
                 this.analyser.smoothingTimeConstant = 0.2;
-                source.spatializer.source.connect(this.analyser);
+                connect(source.source, this.analyser);
             }
             else {
                 setTimeout(checkSource, 0);
@@ -48,10 +54,11 @@ export class ActivityAnalyser extends TypedEventBase {
         };
         checkSource();
     }
+    disposed = false;
     dispose() {
-        if (this.analyser) {
-            this.analyser.disconnect();
-            this.analyser = null;
+        if (!this.disposed) {
+            disconnect(this.source.source, this.analyser);
+            this.disposed = true;
         }
         this.buffer = null;
     }

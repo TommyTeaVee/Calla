@@ -1,4 +1,4 @@
-import { bust, mutedSpeaker, speakerMediumVolume } from "kudzu/emoji/emojis";
+import { bustInSilhouette, mutedSpeaker, speakerMediumVolume } from "kudzu/emoji/emojis";
 import { TypedEvent, TypedEventBase } from "kudzu/events/EventBase";
 import { getTransform } from "kudzu/graphics2d/getTransform";
 import { TextImage } from "kudzu/graphics2d/TextImage";
@@ -9,14 +9,16 @@ import { EmojiAvatar } from "./avatars/EmojiAvatar";
 import { PhotoAvatar } from "./avatars/PhotoAvatar";
 import { VideoAvatar } from "./avatars/VideoAvatar";
 export class UserMovedEvent extends TypedEvent {
+    id;
+    x = 0;
+    y = 0;
     constructor(id) {
         super("userMoved");
         this.id = id;
-        this.x = 0;
-        this.y = 0;
     }
 }
 export class UserJoinedEvent extends TypedEvent {
+    user;
     constructor(user) {
         super("userJoined");
         this.user = user;
@@ -28,34 +30,55 @@ muteAudioIcon.value = mutedSpeaker.value;
 speakerActivityIcon.fontFamily = "Noto Color Emoji";
 speakerActivityIcon.value = speakerMediumVolume.value;
 export class User extends TypedEventBase {
+    isMe;
+    audioMuted = false;
+    videoMuted = true;
+    isActive = false;
+    stackUserCount = 1;
+    stackIndex = 0;
+    stackAvatarHeight = 0;
+    stackAvatarWidth = 0;
+    stackOffsetX = 0;
+    stackOffsetY = 0;
+    lastPositionRequestTime;
+    visible = true;
+    userNameText;
+    _displayName = null;
+    _avatarVideo = null;
+    _avatarImage = null;
+    _avatarEmoji = null;
+    _id;
+    _pose;
+    userMovedEvt;
     constructor(id, displayName, pose, isMe) {
         super();
+        this.isMe = isMe;
         this.id = id;
         this.pose = pose;
-        this.isMe = isMe;
-        this.audioMuted = false;
-        this.videoMuted = true;
-        this.isActive = false;
-        this.stackUserCount = 1;
-        this.stackIndex = 0;
-        this.stackAvatarHeight = 0;
-        this.stackAvatarWidth = 0;
-        this.stackOffsetX = 0;
-        this.stackOffsetY = 0;
-        this.visible = true;
-        this._displayName = null;
-        this._avatarVideo = null;
-        this._avatarImage = null;
-        this._avatarEmoji = null;
-        this.userMovedEvt = new UserMovedEvent(id);
-        this.label = isMe ? "(Me)" : `(${this.id})`;
-        this.setAvatarEmoji(bust.value);
+        this.setAvatarEmoji(bustInSilhouette.value);
         this.lastPositionRequestTime = performance.now() / 1000 - POSITION_REQUEST_DEBOUNCE_TIME;
         this.userNameText = new TextImage();
-        this.userNameText.fillColor = "white";
+        this.userNameText.textFillColor = "white";
         this.userNameText.fontSize = 128;
         this.displayName = displayName;
         Object.seal(this);
+    }
+    get id() {
+        return this._id;
+    }
+    set id(v) {
+        if (v !== this.id) {
+            this._id = v;
+            this.userMovedEvt = new UserMovedEvent(this.id);
+        }
+    }
+    get pose() {
+        return this._pose;
+    }
+    set pose(v) {
+        if (v !== this.pose) {
+            this._pose = v;
+        }
     }
     get x() {
         return this.pose.current.p[0];
@@ -190,6 +213,9 @@ export class User extends TypedEventBase {
                 return null;
             default: assertNever(this.avatarMode);
         }
+    }
+    get label() {
+        return this.isMe ? "(Me)" : `(${this.id})`;
     }
     get displayName() {
         return this._displayName || this.label;

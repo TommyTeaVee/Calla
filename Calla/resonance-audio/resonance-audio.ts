@@ -20,6 +20,8 @@
  */
 
 import { vec3 } from "gl-matrix";
+import { arrayRemoveAt } from "kudzu/arrays/arrayRemoveAt";
+import { connect, disconnect, Gain } from "kudzu/audio";
 import type { IDisposable } from "kudzu/using";
 import type { RenderingMode } from "../omnitone/rendering-mode";
 import { Encoder } from './encoder';
@@ -103,7 +105,7 @@ export class ResonanceAudio implements IDisposable {
     room: Room;
 
     ambisonicOrder: number;
-    context: AudioContext;
+    context: BaseAudioContext;
     output: GainNode;
     ambisonicOutput: GainNode;
     ambisonicInput: GainNode;
@@ -115,7 +117,7 @@ export class ResonanceAudio implements IDisposable {
      * @param options
      * Options for constructing a new ResonanceAudio scene.
      */
-    constructor(context: AudioContext, options?: ResonanceAudioOptions) {
+    constructor(context: BaseAudioContext, options?: ResonanceAudioOptions) {
         // Use defaults for undefined arguments.
         options = Object.assign({
             ambisonicOrder: DEFAULT_AMBISONIC_ORDER,
@@ -138,7 +140,7 @@ export class ResonanceAudio implements IDisposable {
             materials: options.materials,
             speedOfSound: options.speedOfSound,
         });
-        this.listener = new Listener(context, {
+        this.listener = new Listener({
             ambisonicOrder: options.ambisonicOrder,
             position: options.listenerPosition,
             forward: options.listenerForward,
@@ -148,14 +150,14 @@ export class ResonanceAudio implements IDisposable {
 
         // Create auxillary audio nodes.
         this.context = context;
-        this.output = context.createGain();
-        this.ambisonicOutput = context.createGain();
+        this.output = Gain("resonance-output");
+        this.ambisonicOutput = Gain("resonance-ambisonic-output");
         this.ambisonicInput = this.listener.input;
 
         // Connect audio graph.
-        this.room.output.connect(this.listener.input);
-        this.listener.output.connect(this.output);
-        this.listener.ambisonicOutput.connect(this.ambisonicOutput);
+        connect(this.room, this.listener);
+        connect(this.listener, this.output);
+        connect(this.listener.ambisonicOutput, this.ambisonicOutput);
     }
 
     getRenderingMode() {
@@ -166,10 +168,14 @@ export class ResonanceAudio implements IDisposable {
         this.listener.setRenderingMode(mode);
     }
 
+    private disposed = false;
     dispose(): void {
-        this.room.output.disconnect(this.listener.input);
-        this.listener.output.disconnect(this.output);
-        this.listener.ambisonicOutput.disconnect(this.ambisonicOutput);
+        if (!this.disposed) {
+            disconnect(this.room);
+            disconnect(this.listener);
+            disconnect(this.listener.ambisonicOutput);
+            this.disposed = true;
+        }
     }
 
 
@@ -194,7 +200,7 @@ export class ResonanceAudio implements IDisposable {
     removeSource(source: Source) {
         const sourceIdx = this._sources.findIndex((s) => s === source);
         if (sourceIdx > -1) {
-            this._sources.splice(sourceIdx, 1);
+            arrayRemoveAt(this._sources, sourceIdx);
             source.dispose();
         }
     }

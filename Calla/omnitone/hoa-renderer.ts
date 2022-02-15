@@ -22,7 +22,7 @@
 
 
 import { mat3, mat4 } from "gl-matrix";
-import { assertNever } from "kudzu/typeChecks";
+import { channelCount, channelCountMode, channelInterpretation, connect, disconnect, ErsatzAudioNode, Gain } from "kudzu/audio";
 import type { IDisposable } from "kudzu/using";
 import { BufferDataType, BufferList } from './buffer-list';
 import { HOAConvolver } from './hoa-convolver';
@@ -55,8 +55,7 @@ export interface HOARendererOptions {
 /**
  * Omnitone HOA renderer class. Uses the optimized convolution technique.
  */
-export class HOARenderer implements IDisposable {
-    private context: BaseAudioContext;
+export class HOARenderer implements IDisposable, ErsatzAudioNode {
     private config: HOARendererOptions;
     input: GainNode;
     output: GainNode;
@@ -67,8 +66,7 @@ export class HOARenderer implements IDisposable {
     /**
      * Omnitone HOA renderer class. Uses the optimized convolution technique.
      */
-    constructor(context: BaseAudioContext, options: HOARendererOptions) {
-        this.context = context;
+    constructor(options: HOARendererOptions) {
 
         this.config = Object.assign({
             ambisonicOrder: 3,
@@ -101,34 +99,41 @@ export class HOARenderer implements IDisposable {
      * Builds the internal audio graph.
      */
     private _buildAudioGraph(): void {
-        this.input = this.context.createGain();
-        this.output = this.context.createGain();
-        this.bypass = this.context.createGain();
-        this.rotator = new HOARotator(this.context, this.config.ambisonicOrder);
-        this.convolver =
-            new HOAConvolver(this.context, this.config.ambisonicOrder);
-        this.input.connect(this.rotator.input);
-        this.input.connect(this.bypass);
-        this.rotator.output.connect(this.convolver.input);
-        this.convolver.output.connect(this.output);
+        this.output = Gain("hoa-renderer-output");
 
-        this.input.channelCount = this.config.numberOfChannels;
-        this.input.channelCountMode = 'explicit';
-        this.input.channelInterpretation = 'discrete';
+        this.rotator = new HOARotator(this.config.ambisonicOrder);
+
+        this.bypass = Gain("hoa-renderer-bypass");
+
+        this.input = Gain(
+            "hoa-renderer-input",
+            channelCount(this.config.numberOfChannels),
+            channelCountMode("explicit"),
+            channelInterpretation("discrete"),
+            this.rotator,
+            this.bypass);
+
+        this.convolver = new HOAConvolver(this.config.ambisonicOrder);
+
+        connect(this.rotator, this.convolver);
+        connect(this.convolver, this);
     }
 
+    private disposed = false;
     dispose(): void {
-        if (this.getRenderingMode() === RenderingMode.Bypass) {
-            this.bypass.connect(this.output);
+        if (!this.disposed) {
+            if (this.getRenderingMode() === RenderingMode.Bypass) {
+                disconnect(this.bypass);
+            }
+
+            disconnect(this.input);
+            disconnect(this.rotator);
+            disconnect(this.convolver);
+
+            this.rotator.dispose();
+            this.convolver.dispose();
+            this.disposed = true;
         }
-
-        this.input.disconnect(this.rotator.input);
-        this.input.disconnect(this.bypass);
-        this.rotator.output.disconnect(this.convolver.input);
-        this.convolver.output.disconnect(this.output);
-
-        this.rotator.dispose();
-        this.convolver.dispose();
     }
 
     /**
@@ -138,11 +143,11 @@ export class HOARenderer implements IDisposable {
         let bufferList;
         if (this.config.hrirPathList) {
             bufferList =
-                new BufferList(this.context, this.config.hrirPathList, { dataType: BufferDataType.URL });
+                new BufferList(this.config.hrirPathList, { dataType: BufferDataType.URL });
         } else {
             bufferList = this.config.ambisonicOrder === 2
-                ? new BufferList(this.context, SOAHrirBase64)
-                : new BufferList(this.context, TOAHrirBase64);
+                ? new BufferList(SOAHrirBase64)
+                : new BufferList(TOAHrirBase64);
         }
 
         try {
@@ -191,20 +196,18 @@ export class HOARenderer implements IDisposable {
             return;
         }
 
-        switch (mode) {
-            case RenderingMode.Ambisonic:
-                this.convolver.enable();
-                this.bypass.disconnect();
-                break;
-            case RenderingMode.Bypass:
-                this.convolver.disable();
-                this.bypass.connect(this.output);
-                break;
-            case RenderingMode.None:
-                this.convolver.disable();
-                this.bypass.disconnect();
-                break;
-            default: assertNever(mode);
+        if (mode === RenderingMode.Ambisonic) {
+            this.convolver.enable;
+        }
+        else {
+            this.convolver.disable();
+        }
+
+        if (mode === RenderingMode.Bypass) {
+            connect(this.bypass, this.output);
+        }
+        else {
+            disconnect(this.bypass, this.output);
         }
 
         this.config.renderingMode = mode;

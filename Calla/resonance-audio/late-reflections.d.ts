@@ -65,7 +65,8 @@ export declare class LateReflections implements IDisposable {
     /**
     * Late-reflections reverberation filter for Ambisonic content.
     */
-    constructor(context: AudioContext, options?: LateReflectionsOptions);
+    constructor(context: BaseAudioContext, options?: LateReflectionsOptions);
+    private disposed;
     dispose(): void;
     /**
      * Re-compute a new impulse response by providing Multiband RT60 durations.

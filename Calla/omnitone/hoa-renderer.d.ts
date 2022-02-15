@@ -18,6 +18,7 @@
  * ambisonic decoder and the optimized binaural renderer.
  */
 import { mat3, mat4 } from "gl-matrix";
+import { ErsatzAudioNode } from "kudzu/audio";
 import type { IDisposable } from "kudzu/using";
 import { HOARotator } from './hoa-rotator';
 import { RenderingMode } from "./rendering-mode";
@@ -34,8 +35,7 @@ export interface HOARendererOptions {
 /**
  * Omnitone HOA renderer class. Uses the optimized convolution technique.
  */
-export declare class HOARenderer implements IDisposable {
-    private context;
+export declare class HOARenderer implements IDisposable, ErsatzAudioNode {
     private config;
     input: GainNode;
     output: GainNode;
@@ -45,11 +45,12 @@ export declare class HOARenderer implements IDisposable {
     /**
      * Omnitone HOA renderer class. Uses the optimized convolution technique.
      */
-    constructor(context: BaseAudioContext, options: HOARendererOptions);
+    constructor(options: HOARendererOptions);
     /**
      * Builds the internal audio graph.
      */
     private _buildAudioGraph;
+    private disposed;
     dispose(): void;
     /**
      * Initializes and loads the resource for the renderer.

@@ -1,28 +1,42 @@
 import { arrayClear } from "../arrays/arrayClear";
 import { arrayRemove } from "../arrays/arrayRemove";
-import { isNullOrUndefined } from "../typeChecks";
+import { TypedEvent, TypedEventBase } from "../events/EventBase";
+import { isDefined } from "../typeChecks";
 
-export class LRUCache<KeyT, ValueT> {
+export class LRUCacheItemEvicted<KeyT, ValueT> extends TypedEvent<"itemevicted">
+{
+    constructor(public readonly key: KeyT, public readonly value: ValueT) {
+        super("itemevicted");
+    }
+}
+
+export class LRUCache<KeyT, ValueT> extends TypedEventBase<{
+    itemevicted: LRUCacheItemEvicted<KeyT, ValueT>;
+}>{
     map = new Map<KeyT, ValueT>();
     usage = new Array<KeyT>();
 
+    private removed = new Map<KeyT, ValueT>();
+
     constructor(public size: number) {
+        super();
     }
 
     set(key: KeyT, value: ValueT) {
         this.usage.push(key);
-        const removed = [];
         while (this.usage.length > this.size) {
             const toDelete = this.usage.shift();
-            if (!isNullOrUndefined(toDelete)) {
-                removed.push(toDelete);
+            if (isDefined(toDelete)) {
+                this.removed.set(toDelete, this.map.get(toDelete));
                 this.map.delete(toDelete);
             }
         }
-        arrayRemove(removed, key);
-        if (removed.length > 0) {
-            console.log("removing", removed.join(", "));
+        this.removed.delete(key);
+        for (const [key, value] of this.removed) {
+            this.dispatchEvent(new LRUCacheItemEvicted(key, value));
         }
+        this.removed.clear();
+
         return this.map.set(key, value);
     }
 
@@ -35,6 +49,10 @@ export class LRUCache<KeyT, ValueT> {
     }
 
     delete(key: KeyT) {
+        if (!this.map.has(key)) {
+            return false;
+        }
+
         arrayRemove(this.usage, key);
         return this.map.delete(key);
     }

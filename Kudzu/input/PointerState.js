@@ -1,22 +1,23 @@
 export class PointerState {
+    buttons = 0;
+    moveDistance = 0;
+    dragDistance = 0;
+    x = 0;
+    y = 0;
+    dx = 0;
+    dy = 0;
+    dz = 0;
+    u = 0;
+    v = 0;
+    du = 0;
+    dv = 0;
+    canClick = false;
+    dragging = false;
+    ctrl = false;
+    alt = false;
+    shift = false;
+    meta = false;
     constructor() {
-        this.buttons = 0;
-        this.moveDistance = 0;
-        this.dragDistance = 0;
-        this.x = 0;
-        this.y = 0;
-        this.dx = 0;
-        this.dy = 0;
-        this.u = 0;
-        this.v = 0;
-        this.du = 0;
-        this.dv = 0;
-        this.canClick = false;
-        this.dragging = false;
-        this.ctrl = false;
-        this.alt = false;
-        this.shift = false;
-        this.meta = false;
         Object.seal(this);
     }
     copy(ptr) {
@@ -27,6 +28,7 @@ export class PointerState {
         this.y = ptr.y;
         this.dx = ptr.dx;
         this.dy = ptr.dy;
+        this.dz = ptr.dz;
         this.u = ptr.u;
         this.v = ptr.v;
         this.du = ptr.du;
@@ -44,6 +46,7 @@ export class PointerState {
         this.y = evt.offsetY;
         this.dx = evt.movementX;
         this.dy = evt.movementY;
+        this.dz = 0;
         this.ctrl = evt.ctrlKey;
         this.alt = evt.altKey;
         this.shift = evt.shiftKey;

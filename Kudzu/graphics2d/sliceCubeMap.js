@@ -1,6 +1,6 @@
 import { nextPowerOf2 } from "../math/powerOf2";
 import { sliceImage } from "./sliceImage";
-var CubeMapFaceIndex;
+export var CubeMapFaceIndex;
 (function (CubeMapFaceIndex) {
     CubeMapFaceIndex[CubeMapFaceIndex["None"] = -1] = "None";
     CubeMapFaceIndex[CubeMapFaceIndex["Left"] = 0] = "Left";
@@ -41,5 +41,9 @@ export function sliceCubeMap(img) {
         }
     }
     return images;
+}
+export function sliceCubeMapToImageBitmaps(img) {
+    const canvs = sliceCubeMap(img);
+    return Promise.all(canvs.map(c => createImageBitmap(c)));
 }
 //# sourceMappingURL=sliceCubeMap.js.map

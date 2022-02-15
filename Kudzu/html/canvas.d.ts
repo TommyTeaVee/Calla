@@ -1,5 +1,5 @@
 export declare type CanvasTypes = HTMLCanvasElement | OffscreenCanvas;
-export declare type MemoryImageTypes = CanvasTypes | ImageBitmap;
+export declare type CanvasImageTypes = HTMLImageElement | HTMLCanvasElement | OffscreenCanvas | ImageBitmap;
 export declare type Context2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 export declare type GraphicsContext = RenderingContext | OffscreenCanvasRenderingContext2D;
 export declare const hasHTMLCanvas: boolean;
@@ -9,14 +9,16 @@ export interface WebXRWebGLRenderingContext extends WebGLRenderingContext {
     makeXRCompatible(): Promise<void>;
 }
 export declare function isWebXRWebGLRenderingContext(ctx: any): ctx is WebXRWebGLRenderingContext;
-export declare const hasOffscreenCanvasRenderingContext2D: boolean;
-export declare const hasImageBitmapRenderingContext: boolean;
 export declare function drawImageBitmapToCanvas2D(canv: CanvasTypes, img: ImageBitmap): void;
 export declare function copyImageBitmapToCanvas(canv: CanvasTypes, img: ImageBitmap): void;
+export declare const hasOffscreenCanvasRenderingContext2D: boolean;
+export declare const createUtilityCanvas: typeof createCanvas | typeof createOffscreenCanvas;
+export declare const createUICanvas: typeof createCanvas | typeof createOffscreenCanvas;
+export declare const hasOffscreenCanvasRenderingContext3D: boolean;
+export declare const hasImageBitmapRenderingContext: boolean;
 export declare const drawImageBitmapToCanvas: typeof copyImageBitmapToCanvas;
 export declare function createOffscreenCanvas(width: number, height: number): OffscreenCanvas;
 export declare function createCanvas(w: number, h: number): HTMLCanvasElement;
-export declare const createUtilityCanvas: typeof createOffscreenCanvas | typeof createCanvas;
 export declare function createOffscreenCanvasFromImageBitmap(img: ImageBitmap): OffscreenCanvas;
 export declare function createCanvasFromImageBitmap(img: ImageBitmap): HTMLCanvasElement;
 export declare const createUtilityCanvasFromImageBitmap: typeof createOffscreenCanvasFromImageBitmap | typeof createCanvasFromImageBitmap;
@@ -39,8 +41,6 @@ export declare function isCanvas(obj: any): obj is CanvasTypes;
  * @returns true, if the canvas size changed, false if the given size (with super sampling) resulted in the same size.
  */
 export declare function setCanvasSize(canv: CanvasTypes, w: number, h: number, superscale?: number): boolean;
-export declare function isCanvasRenderingContext2D(ctx: GraphicsContext): ctx is CanvasRenderingContext2D;
-export declare function isOffscreenCanvasRenderingContext2D(ctx: GraphicsContext): ctx is OffscreenCanvasRenderingContext2D;
 export declare function is2DRenderingContext(ctx: GraphicsContext): ctx is Context2D;
 export declare function setCanvas2DContextSize(ctx: Context2D, w: number, h: number, superscale?: number): boolean;
 /**
@@ -71,3 +71,5 @@ export declare function resizeCanvas(canv: HTMLCanvasElement, superscale?: numbe
  * @returns true, if the canvas size changed, false if the given size (with super sampling) resulted in the same size.
  */
 export declare function resizeContext(ctx: CanvasRenderingContext2D, superscale?: number): boolean;
+export declare function canvasView(canvas: CanvasTypes): Promise<void>;
+export declare function canvasToBlob(canvas: CanvasTypes, type?: string, quality?: number): Promise<Blob | null>;

@@ -1,23 +1,25 @@
 import { arrayRemove } from "kudzu/arrays/arrayRemove";
 import { arraySortedInsert } from "kudzu/arrays/arraySortedInsert";
-import { once } from "kudzu/events/once";
+import { Logger } from "kudzu/debugging/Logger";
 import { waitFor } from "kudzu/events/waitFor";
 import { assertNever } from "kudzu/typeChecks";
-import { CallaAvatarChangedEvent, CallaChatEvent, CallaEmojiAvatarEvent, CallaEmoteEvent, CallaUserPointerEvent, CallaUserPosedEvent } from "../../CallaEvents";
+import { CallaChatEvent, CallaEmojiAvatarEvent, CallaEmoteEvent, CallaPhotoAvatarEvent, CallaUserPointerEvent, CallaUserPosedEvent } from "../../CallaEvents";
 import { ConnectionState } from "../../ConnectionState";
 import { BaseMetadataClient } from "../BaseMetadataClient";
 const JITSI_HAX_FINGERPRINT = "Calla";
+const logger = new Logger();
 export class JitsiMetadataClient extends BaseMetadataClient {
+    tele;
+    _status = ConnectionState.Disconnected;
+    remoteUserIDs = new Array();
     constructor(tele) {
-        super(250);
+        super();
         this.tele = tele;
-        this._status = ConnectionState.Disconnected;
-        this.remoteUserIDs = new Array();
         this.tele.addEventListener("participantJoined", (evt) => {
-            arraySortedInsert(this.remoteUserIDs, evt.id, false);
+            arraySortedInsert(this.remoteUserIDs, evt.userID, false);
         });
         this.tele.addEventListener("participantLeft", (evt) => {
-            arrayRemove(this.remoteUserIDs, evt.id);
+            arrayRemove(this.remoteUserIDs, evt.userID);
         });
     }
     get metadataState() {
@@ -35,14 +37,14 @@ export class JitsiMetadataClient extends BaseMetadataClient {
                 const command = data.command;
                 const values = data.values;
                 switch (command) {
-                    case "avatarChanged":
-                        this.dispatchEvent(new CallaAvatarChangedEvent(fromUserID, values[0]));
-                        break;
                     case "emote":
                         this.dispatchEvent(new CallaEmoteEvent(fromUserID, values[0]));
                         break;
                     case "setAvatarEmoji":
                         this.dispatchEvent(new CallaEmojiAvatarEvent(fromUserID, values[0]));
+                        break;
+                    case "setAvatarURL":
+                        this.dispatchEvent(new CallaPhotoAvatarEvent(fromUserID, values[0]));
                         break;
                     case "userPosed":
                         this.dispatchEvent(new CallaUserPosedEvent(fromUserID, values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7], values[8]));
@@ -53,12 +55,15 @@ export class JitsiMetadataClient extends BaseMetadataClient {
                     case "chat":
                         this.dispatchEvent(new CallaChatEvent(fromUserID, values[0]));
                         break;
+                    case "info":
+                    case "error":
+                        // not used here
+                        break;
                     default:
                         assertNever(command);
                 }
             }
         });
-        await once(this.tele.conference, JitsiMeetJS.events.conference.DATA_CHANNEL_OPENED);
         this._status = ConnectionState.Connected;
     }
     async leave() {
@@ -71,18 +76,44 @@ export class JitsiMetadataClient extends BaseMetadataClient {
     async disconnect() {
         // JitsiTeleconferenceClient will already disconnect
     }
-    sendJitsiHax(toUserID, command, ...values) {
+    toRoom(command, ...values) {
+        logger.log(`callInternal:${command}`, ...values);
+        this.tele.conference.broadcastEndpointMessage({
+            hax: JITSI_HAX_FINGERPRINT,
+            command,
+            values
+        });
+        return Promise.resolve();
+    }
+    toUser(command, toUserID, ...values) {
+        logger.log(`callInternal:${toUserID}:${command}`, ...values);
         this.tele.conference.sendMessage({
             hax: JITSI_HAX_FINGERPRINT,
             command,
             values
         }, toUserID);
-    }
-    callInternal(command, ...values) {
-        for (const toUserID of this.remoteUserIDs) {
-            this.sendJitsiHax(toUserID, command, ...values);
-        }
         return Promise.resolve();
+    }
+    setLocalPose(px, py, pz, fx, fy, fz, ux, uy, uz) {
+        this.toRoom("userPosed", px, py, pz, fx, fy, fz, ux, uy, uz);
+    }
+    tellLocalPose(toUserID, px, py, pz, fx, fy, fz, ux, uy, uz) {
+        this.toUser("userPosedSingle", toUserID, px, py, pz, fx, fy, fz, ux, uy, uz);
+    }
+    setLocalPointer(name, px, py, pz, fx, fy, fz, ux, uy, uz) {
+        this.toRoom("userPointer", name, px, py, pz, fx, fy, fz, ux, uy, uz);
+    }
+    setAvatarEmoji(toUserID, emoji) {
+        this.toUser("setAvatarEmoji", toUserID, emoji);
+    }
+    setAvatarURL(toUserID, url) {
+        this.toUser("setAvatarURL", toUserID, url);
+    }
+    emote(emoji) {
+        this.toRoom("emote", emoji);
+    }
+    chat(text) {
+        this.toRoom("chat", text);
     }
     async stopInternal() {
         this._status = ConnectionState.Disconnecting;

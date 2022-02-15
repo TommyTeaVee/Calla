@@ -17,19 +17,21 @@
  * @file Distance-based attenuation filter.
  * @author Andrew Allen <bitllama@google.com>
  */
+import { Gain } from "kudzu/audio";
 import { isGoodNumber } from "kudzu/typeChecks";
 import { DEFAULT_ATTENUATION_ROLLOFF, DEFAULT_MAX_DISTANCE, DEFAULT_MIN_DISTANCE, EPSILON_FLOAT } from "./utils";
 /**
  * Distance-based attenuation filter.
  */
 export class Attenuation {
+    minDistance = DEFAULT_MIN_DISTANCE;
+    maxDistance = DEFAULT_MAX_DISTANCE;
+    rolloff = DEFAULT_ATTENUATION_ROLLOFF;
+    gainNode;
     /**
      * Distance-based attenuation filter.
      */
-    constructor(context, options) {
-        this.minDistance = DEFAULT_MIN_DISTANCE;
-        this.maxDistance = DEFAULT_MAX_DISTANCE;
-        this.rolloff = DEFAULT_ATTENUATION_ROLLOFF;
+    constructor(options) {
         if (options) {
             if (isGoodNumber(options.minDistance)) {
                 this.minDistance = options.minDistance;
@@ -44,12 +46,15 @@ export class Attenuation {
         // Assign values.
         this.setRolloff(this.rolloff);
         // Create node.
-        this.gainNode = context.createGain();
+        this.gainNode = Gain("attenuation");
         // Initialize distance to max distance.
         this.setDistance(this.maxDistance);
-        // Input/Output proxy.
-        this.input = this.gainNode;
-        this.output = this.gainNode;
+    }
+    get input() {
+        return this.gainNode;
+    }
+    get output() {
+        return this.gainNode;
     }
     /**
      * Set distance from the listener.

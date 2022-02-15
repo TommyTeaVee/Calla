@@ -4,11 +4,12 @@ import type { InterpolatedPose } from "calla/audio/positions/InterpolatedPose";
 // the output audio device. This flag indicates whether or not
 // we are in a browser that supports such a feature, without
 // hardcoding the project to a specific browser.
-import { canChangeAudioOutput } from "calla/audio/canChangeAudioOutput";
+import { canChangeAudioOutput } from "calla/devices/DeviceManager";
 
-// Strictly speaking, this is the only class that needs to be
-// imported, if you are consuming Calla through a vanilla
-// JavaScript project.
+
+// Strictly speaking, these are the only classes that needs to be
+// imported, if you are consuming Calla through a vanilla JavaScript project.
+import { JitsiOnlyClientLoader } from "calla/client-loader/JitsiOnlyClientLoader";
 import { Calla } from "calla/Calla";
 
 // The type names of the events we will be handling in the demo.
@@ -26,7 +27,7 @@ import type {
 import { RequestAnimationFrameTimer } from "kudzu/timers/RequestAnimationFrameTimer";
 
 // Import the configuration parameters.
-import { JITSI_HOST, JVB_HOST, JVB_MUC } from "../constants";
+import { JITSI_HOST, JVB_HOST, JVB_MUC } from "../configuration";
 
 
 
@@ -45,10 +46,18 @@ const controls = {
 };
 
 /**
- * The Calla interface, through which teleconferencing sessions and
- * user audio positioning is managed.
+ * The Calla loader makes sure all the necessary parts for Calla (specifically,
+ * lib-jitsi-meet, and its transient dependency jQuery) get loaded before
+ * the Calla client is created.
  **/
-const client = new Calla();
+const loader = new JitsiOnlyClientLoader(JITSI_HOST, JVB_HOST, JVB_MUC);
+
+/**
+ * The Calla interface, through which teleconferencing sessions and
+ * user audio positioning is managed. We'll get an instance of it
+ * after calling loader.load()
+ **/
+let client: Calla = null;
 
 /**
  * A place to stow references to our users.
@@ -88,7 +97,7 @@ async function connect() {
     controls.connect.disabled = true;
 
     // and start the connection.
-    await client.join(roomName);
+    await client.join(roomName, true);
     await client.identify(userName);
 }
 
@@ -131,7 +140,7 @@ function addUser(id: string, displayName: string, pose: InterpolatedPose, isLoca
         const local = users.get(client.localUserID);
         if (local) {
             const { p, f, u } = local.pose.end;
-            client.setLocalPoseImmediate(
+            client.setLocalPose(
                 p[0], p[1], p[2],
                 f[0], f[1], f[2],
                 u[0], u[1], u[2]
@@ -197,7 +206,7 @@ function setPosition(x: number, y: number) {
  * be moved.
  **/
 function update() {
-    client.update();
+    client.audio.update();
     for (let user of users.values()) {
         user.update();
     }
@@ -338,33 +347,33 @@ controls.space.addEventListener("click", (evt: MouseEvent) => {
 });
 
 client.addEventListener("conferenceJoined", (evt: CallaConferenceJoinedEvent) =>
-    startGame(evt.id, evt.pose));
+    startGame(evt.userID, evt.pose));
 
 /**
  * If the user has left the conference (or been kicked
  * by a moderator), we need to shut down the rendering.
  **/
 client.addEventListener("conferenceLeft", (evt: CallaConferenceLeftEvent) => {
-    removeUser(evt.id);
+    removeUser(evt.userID);
     timer.stop();
     controls.leave.disabled = true;
     controls.connect.disabled = false;
 });
 
 client.addEventListener("participantJoined", (evt: CallaParticipantJoinedEvent) =>
-    addUser(evt.id, evt.displayName, evt.source.pose, false));
+    addUser(evt.userID, evt.displayName, evt.source.pose, false));
 
 client.addEventListener("participantLeft", (evt: CallaParticipantLeftEvent) =>
-    removeUser(evt.id));
+    removeUser(evt.userID));
 
 client.addEventListener("videoAdded", (evt: CallaVideoStreamAddedEvent) =>
-    changeVideo(evt.id, evt.stream));
+    changeVideo(evt.userID, evt.stream));
 
 client.addEventListener("videoRemoved", (evt: CallaVideoStreamRemovedEvent) =>
-    changeVideo(evt.id, null));
+    changeVideo(evt.userID, null));
 
 client.addEventListener("userNameChanged", (evt: CallaUserNameChangedEvent) =>
-    changeName(evt.id, evt.displayName));
+    changeName(evt.userID, evt.displayName));
 
 timer.addEventListener("tick", update);
 
@@ -430,28 +439,30 @@ function deviceSelector(addNone: boolean, select: HTMLSelectElement, values: Med
     // detect there is no option to change outputs.
     controls.speakers.disabled = !canChangeAudioOutput;
 
+    client = await loader.load();
+    await client.devices.getMediaPermissions();
+
     deviceSelector(
         true,
         controls.cams,
-        await client.getVideoInputDevices(true),
-        client.preferredVideoInputID,
-        (device) => client.setVideoInputDevice(device));
+        await client.devices.getVideoInputDevices(true),
+        client.devices.preferredVideoInputID,
+        (device) => client.devices.setVideoInputDevice(device));
 
     deviceSelector(
         true,
         controls.mics,
-        await client.getAudioInputDevices(true),
-        client.preferredAudioInputID,
-        (device) => client.setAudioInputDevice(device));
+        await client.devices.getAudioInputDevices(true),
+        client.devices.preferredAudioInputID,
+        (device) => client.devices.setAudioInputDevice(device));
 
     deviceSelector(
         false,
         controls.speakers,
-        await client.getAudioOutputDevices(true),
-        client.preferredAudioOutputID,
+        await client.devices.getAudioOutputDevices(true),
+        client.devices.preferredAudioOutputID,
         (device) => client.setAudioOutputDevice(device));
 
-    await client.prepare(JITSI_HOST, JVB_HOST, JVB_MUC);
     await client.connect();
 
     // At this point, everything is ready, so we can let 
@@ -465,10 +476,11 @@ function deviceSelector(addNone: boolean, select: HTMLSelectElement, values: Med
 // locally and testing multiple connections. It can
 // safely be ignored.
 // ===================================================
-import { userNumber } from "kudzu/testing/userNumber";
+import { getUserNumber } from "kudzu/testing/userNumber";
 import { openSideTest } from "kudzu/testing/windowing";
 
 const sideTest = document.getElementById("sideTest") as HTMLButtonElement
+const userNumber = getUserNumber();
 
 if (userNumber === 1) {
     sideTest.addEventListener("click", openSideTest);

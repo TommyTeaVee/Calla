@@ -1,5 +1,5 @@
 import type { InterpolatedPose } from "calla/audio/positions/InterpolatedPose";
-import { bust, mutedSpeaker, speakerMediumVolume } from "kudzu/emoji/emojis";
+import { bustInSilhouette, mutedSpeaker, speakerMediumVolume } from "kudzu/emoji/emojis";
 import { TypedEvent, TypedEventBase } from "kudzu/events/EventBase";
 import { getTransform } from "kudzu/graphics2d/getTransform";
 import { TextImage } from "kudzu/graphics2d/TextImage";
@@ -43,7 +43,6 @@ interface UserEvents {
 }
 
 export class User extends TypedEventBase<UserEvents> {
-    label: string;
     audioMuted: boolean = false;
     videoMuted: boolean = true;
     isActive: boolean = false;
@@ -60,22 +59,45 @@ export class User extends TypedEventBase<UserEvents> {
     private _avatarVideo: VideoAvatar = null;
     private _avatarImage: PhotoAvatar = null;
     private _avatarEmoji: EmojiAvatar = null;
+    private _id: string;
+    private _pose: InterpolatedPose;
     private userMovedEvt: UserMovedEvent;
 
-    constructor(public id: string, displayName: string, private pose: InterpolatedPose, public isMe: boolean) {
+    constructor(id: string, displayName: string, pose: InterpolatedPose, public readonly isMe: boolean) {
         super();
 
-        this.userMovedEvt = new UserMovedEvent(id);
-        this.label = isMe ? "(Me)" : `(${this.id})`;
-
-        this.setAvatarEmoji(bust.value);
+        this.id = id;
+        this.pose = pose;
+    
+        this.setAvatarEmoji(bustInSilhouette.value);
 
         this.lastPositionRequestTime = performance.now() / 1000 - POSITION_REQUEST_DEBOUNCE_TIME;
         this.userNameText = new TextImage();
-        this.userNameText.fillColor = "white";
+        this.userNameText.textFillColor = "white";
         this.userNameText.fontSize = 128;
         this.displayName = displayName;
         Object.seal(this);
+    }
+
+    get id(): string {
+        return this._id;
+    }
+
+    set id(v: string) {
+        if (v !== this.id) {
+            this._id = v;
+            this.userMovedEvt = new UserMovedEvent(this.id);
+        }
+    }
+
+    get pose(): InterpolatedPose {
+        return this._pose;
+    }
+
+    set pose(v: InterpolatedPose) {
+        if (v !== this.pose) {
+            this._pose = v;
+        }
     }
 
     get x() {
@@ -224,6 +246,10 @@ export class User extends TypedEventBase<UserEvents> {
                 return null;
             default: assertNever(this.avatarMode);
         }
+    }
+
+    get label() {
+        return this.isMe ? "(Me)" : `(${this.id})`;
     }
 
     get displayName() {

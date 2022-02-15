@@ -10,15 +10,16 @@ import {
     questionMark,
     speakerHighVolume,
     speakingHead,
-    squareFourCourners,
+    squareFourCorners,
     upwardsButton,
     videoCamera,
     whiteFlower
 } from "kudzu/emoji/emojis";
 import { TypedEvent, TypedEventBase } from "kudzu/events/EventBase";
-import { alt, className, height as cssHeight, id, margin, max, min, role, src, step, textAlign, title, value } from "kudzu/html/attrs";
+import { alt, className, id, max, min, role, src, step, title, value } from "kudzu/html/attrs";
+import { height, margin, styles, textAlign } from "kudzu/html/css";
 import { onClick, onInput } from "kudzu/html/evts";
-import { Button, Div, Img, InputRange, Run } from "kudzu/html/tags";
+import { Button, Div, ErsatzElement, Img, InputRange, Run } from "kudzu/html/tags";
 import { IOpenable, updateLabel } from "./ops";
 
 interface ButtonLayerEvents {
@@ -51,8 +52,7 @@ const toggleOptionsEvt = new TypedEvent("toggleOptions"),
 
 export class ButtonLayer
     extends TypedEventBase<ButtonLayerEvents>
-    implements IOpenable
-{
+    implements IOpenable, ErsatzElement {
     element: HTMLDivElement;
     optionsButton: HTMLButtonElement;
     instructionsButton: HTMLButtonElement;
@@ -81,9 +81,8 @@ export class ButtonLayer
             this.dispatchEvent(zoomChangedEvt);
         };
 
-        this.element = Div(id("controls"));
-
-        this.element.append(
+        this.element = Div(
+            id("controls"),
 
             this.optionsButton = Button(
                 id("optionsButton"),
@@ -106,8 +105,9 @@ export class ButtonLayer
                 Img(src("https://cdn2.iconfinder.com/data/icons/minimalism/512/twitter.png"),
                     alt("icon"),
                     role("presentation"),
-                    cssHeight("25px"),
-                    margin("2px auto -2px auto")),
+                    styles(
+                        height("25px"),
+                        margin("2px auto -2px auto"))),
                 Run("Tweet")),
 
             this.showUsersButton = Button(
@@ -123,7 +123,7 @@ export class ButtonLayer
                 title("Toggle fullscreen"),
                 onClick(() => this.dispatchEvent(toggleFullscreenEvt)),
                 onClick(() => this.isFullscreen = !this.isFullscreen),
-                Run(squareFourCourners.value),
+                Run(squareFourCorners.value),
                 Run("Expand")),
 
 
@@ -198,6 +198,8 @@ export class ButtonLayer
                 Run(magnifyingGlassTiltedRight.value),
                 Run("-")));
 
+        this.hide();
+
         Object.seal(this);
     }
 
@@ -217,7 +219,7 @@ export class ButtonLayer
             this.fullscreenButton,
             value,
             downRightArrow.value,
-            squareFourCourners.value);
+            squareFourCorners.value);
     }
 
     get style() {

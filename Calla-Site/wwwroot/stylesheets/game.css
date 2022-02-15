@@ -1,11 +1,26 @@
-#login form > div {
+#login form {
     display: grid;
-    grid-template-columns: 1fr 2fr 1fr;
+    grid-template-columns: auto auto;
+    grid-row-gap: 5px;
+    row-gap: 5px;
+    grid-column-gap: 5px;
+    column-gap: 5px;
     margin-bottom: 0.5em;
+    align-items: center;
+    justify-items: end;
 }
 
-    #login form > div > * {
-        grid-column: 1/4;
+    #login form > *:nth-child(2n+1) {
+        grid-column: 1/2;
+    }
+
+    #login form > *:nth-child(2n) {
+        grid-column: -2/-1;
+    }
+
+    #login form > *:last-child {
+        grid-column: 1/-1;
+        justify-self: stretch;
     }
 
 body,
@@ -21,26 +36,6 @@ body,
     height: 100%;
     touch-action: none;
 }
-
-#emailControl > *:last-child {
-    opacity: 0.5;
-    font-size: 80%;
-    padding-left: 2em;
-    font-style: italic;
-    text-align: right;
-}
-
-#roomSelectorControl > select,
-#roomEntryControl > input {
-    grid-column: 1/3 !important;
-}
-
-#roomSelectorControl > button,
-#roomEntryControl > button {
-    grid-column: 3/4 !important;
-}
-
-
 
 #controls {
     position: fixed;
@@ -162,10 +157,15 @@ button:hover {
 button,
 #controls .comboButton,
 .dialog {
-    border: solid 1px rgba(255, 255, 255, 0.5);
+    border: solid 1px gray;
     color: white;
     border-radius: 0;
 }
+
+    button:disabled {
+        color: gray;
+        border: dashed 1px gray;
+    }
 
 #controls button,
 .dialog {
@@ -220,51 +220,51 @@ button,
         grid-template-rows: auto auto 1fr auto;
     }
 
-.dialogTitle {
-    padding: 0.5em;
-    background-color: rgba(0, 0, 127, 0.5);
-    display: grid;
-    grid-template-columns: auto 3em;
-    grid-row: 1/2;
-}
+    .dialog > .title {
+        padding: 0.5em;
+        background-color: rgba(0, 0, 127, 0.5);
+        display: grid;
+        grid-template-columns: auto 3em;
+        grid-row: 1/2;
+    }
 
-.dialog > .header {
-    grid-row: 2/3;
-}
+    .dialog > .header {
+        grid-row: 2/3;
+    }
 
-.dialog > .content {
-    padding: 0.5em;
-    overflow-y: scroll;
-    height: 100%;
-}
+    .dialog > .content {
+        padding: 0.5em;
+        overflow-y: auto;
+        height: 100%;
+    }
 
-.dialog.dialog-1 > .content {
-    grid-row: 2/3;
-}
+    .dialog.dialog-1 > .content {
+        grid-row: 2/3;
+    }
 
-.dialog.dialog-2 > .content,
-.dialog.dialog-3 > .content {
-    grid-row: 3/4;
-}
+    .dialog.dialog-2 > .content,
+    .dialog.dialog-3 > .content {
+        grid-row: 3/4;
+    }
 
-.dialog > .footer {
-    grid-row: 4/5;
-}
+    .dialog > .footer {
+        grid-row: 4/5;
+    }
 
-.dialog h1,
-.dialog h1 a,
-.dialog h2,
-.dialog h2 a,
-.dialog h3,
-.dialog h3 a,
-.dialog h4,
-.dialog h4 a,
-.dialog h5,
-.dialog h5 a,
-.dialog h6,
-.dialog h6 a {
-    color: white;
-}
+    .dialog h1,
+    .dialog h1 a,
+    .dialog h2,
+    .dialog h2 a,
+    .dialog h3,
+    .dialog h3 a,
+    .dialog h4,
+    .dialog h4 a,
+    .dialog h5,
+    .dialog h5 a,
+    .dialog h6,
+    .dialog h6 a {
+        color: white;
+    }
 
 .dialogTitle > h1 {
     display: inline-block;

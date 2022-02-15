@@ -4,14 +4,14 @@ import { project } from "kudzu/math/project";
  * A position and orientation, at a given time.
  **/
 export class Pose {
+    t = 0;
+    p = vec3.create();
+    f = vec3.set(vec3.create(), 0, 0, -1);
+    u = vec3.set(vec3.create(), 0, 1, 0);
     /**
      * Creates a new position and orientation, at a given time.
      **/
     constructor() {
-        this.t = 0;
-        this.p = vec3.create();
-        this.f = vec3.set(vec3.create(), 0, 0, -1);
-        this.u = vec3.set(vec3.create(), 0, 1, 0);
         Object.seal(this);
     }
     /**
@@ -41,7 +41,7 @@ export class Pose {
         else if (end.t <= t) {
             this.copy(end);
         }
-        else if (start.t < t) {
+        else {
             const p = project(t, start.t, end.t);
             this.copy(start);
             vec3.lerp(this.p, this.p, end.p, p);

@@ -1,28 +1,47 @@
 import type { vec3 } from "gl-matrix";
 import { arrayRemove } from "kudzu/arrays/arrayRemove";
 import { arraySortedInsert } from "kudzu/arrays/arraySortedInsert";
+import { audioCtx, audioReady, buffer, BufferSource, ChannelMerger, connect, decodeAudioData, hasAudioListener, hasNewAudioListener, hasOldAudioListener, loop as loopAudio, MediaElementSource, MediaStreamDestination, MediaStreamSource, MediaStreamTrackSource } from "kudzu/audio";
 import { TypedEvent, TypedEventBase } from "kudzu/events/EventBase";
-import { onUserGesture } from "kudzu/events/onUserGesture";
-import { waitFor } from "kudzu/events/waitFor";
-import { autoPlay, controls, display, muted, playsInline, srcObject, styles } from "kudzu/html/attrs";
-import type { HTMLAudioElementWithSinkID } from "kudzu/html/tags";
+import { once } from "kudzu/events/once";
+import { autoPlay, controls, loop, muted, playsInline, src } from "kudzu/html/attrs";
+import { display, styles } from "kudzu/html/css";
+import type { HTMLAudioElementWithSinkID, ElementChild } from "kudzu/html/tags";
 import { Audio } from "kudzu/html/tags";
 import { Fetcher } from "kudzu/io/Fetcher";
-import { IFetcher } from "kudzu/io/IFetcher";
+import type { IFetcher } from "kudzu/io/IFetcher";
+import { guessMediaTypeByFileName } from "kudzu/mediaTypes";
 import type { progressCallback } from "kudzu/tasks/progressCallback";
-import { using } from "kudzu/using";
-import { ActivityAnalyser } from "./ActivityAnalyser";
+import { assertNever } from "kudzu/typeChecks";
+import type { IDisposable } from "kudzu/using";
+import { canChangeAudioOutput, DeviceManager } from "../devices/DeviceManager";
+import { DEFAULT_LOCAL_USER_ID } from "../tele/BaseTeleconferenceClient";
 import { AudioActivityEvent } from "./AudioActivityEvent";
-import { AudioSource } from "./AudioSource";
-import { canChangeAudioOutput } from "./canChangeAudioOutput";
+import { AudioDestination } from "./destinations/AudioDestination";
+import type { BaseListener } from "./destinations/spatializers/BaseListener";
+import { NoSpatializationListener } from "./destinations/spatializers/NoSpatializationListener";
+import { ResonanceAudioListener } from "./destinations/spatializers/ResonanceAudioListener";
+import { VolumeScalingListener } from "./destinations/spatializers/VolumeScalingListener";
+import { WebAudioListenerNew } from "./destinations/spatializers/WebAudioListenerNew";
+import { WebAudioListenerOld } from "./destinations/spatializers/WebAudioListenerOld";
+import type { IPoseable } from "./IPoseable";
 import type { InterpolatedPose } from "./positions/InterpolatedPose";
-import type { BaseListener } from "./spatializers/listeners/BaseListener";
-import { ResonanceAudioListener } from "./spatializers/listeners/ResonanceAudioListener";
-import { VolumeScalingListener } from "./spatializers/listeners/VolumeScalingListener";
-import { WebAudioListenerNew } from "./spatializers/listeners/WebAudioListenerNew";
-import { WebAudioListenerOld } from "./spatializers/listeners/WebAudioListenerOld";
-import type { BaseNode } from "./spatializers/nodes/BaseNode";
+import { AudioBufferSpawningSource } from "./sources/AudioBufferSpawningSource";
+import { AudioElementSource } from "./sources/AudioElementSource";
+import type { AudioStreamSourceNode } from "./sources/AudioStreamSource";
+import { AudioStreamSource } from "./sources/AudioStreamSource";
+import type { IPlayableSource } from "./sources/IPlayableSource";
+import { BaseEmitter } from "./sources/spatializers/BaseEmitter";
 
+function BackgroundAudio(autoplay: boolean, mute: boolean, ...rest: ElementChild[]): HTMLAudioElementWithSinkID {
+    return Audio(
+        playsInline(true),
+        controls(false),
+        muted(mute),
+        autoPlay(autoplay),
+        styles(display("none")),
+        ...rest);
+}
 
 if (!("AudioContext" in globalThis) && "webkitAudioContext" in globalThis) {
     globalThis.AudioContext = (globalThis as any).webkitAudioContext;
@@ -33,53 +52,35 @@ if (!("OfflineAudioContext" in globalThis) && "webkitOfflineAudioContext" in glo
 }
 
 
-type withPoseCallback<T> = (pose: InterpolatedPose, dt: number) => T;
+type withPoseCallback<T> = (pose: InterpolatedPose) => T;
 
-const BUFFER_SIZE = 1024;
-const audioActivityEvt = new AudioActivityEvent();
 const audioReadyEvt = new TypedEvent("audioReady");
 const testAudio = Audio();
 
 const useTrackSource = "createMediaStreamTrackSource" in AudioContext.prototype;
-const useElementSource = !useTrackSource && !("createMediaStreamSource" in AudioContext.prototype);
-
-const audioTypes = new Map<string, string[]>([
-    ["wav", ["audio/wav", "audio/vnd.wave", "audio/wave", "audio/x-wav"]],
-    ["mp3", ["audio/mpeg"]],
-    ["m4a", ["audio/mp4"]],
-    ["m4b", ["audio/mp4"]],
-    ["3gp", ["audio/mp4"]],
-    ["3g2", ["audio/mp4"]],
-    ["aac", ["audio/aac", "audio/aacp"]],
-    ["oga", ["audio/ogg"]],
-    ["ogg", ["audio/ogg"]],
-    ["spx", ["audio/ogg"]],
-    ["webm", ["audio/webm"]],
-    ["flac", ["audio/flac"]]
-]);
+const useElementSourceForUsers = !useTrackSource && !("createMediaStreamSource" in AudioContext.prototype);
+const useElementSourceForClips = true;
 
 function shouldTry(path: string): boolean {
     const idx = path.lastIndexOf(".");
     if (idx > -1) {
-        const ext = path.substring(idx + 1);
-        if (audioTypes.has(ext)) {
-            for (const type of audioTypes.get(ext)) {
-                if (testAudio.canPlayType(type)) {
-                    return true;
-                }
+        const types = guessMediaTypeByFileName(path);
+        for (const type of types) {
+            if (testAudio.canPlayType(type.value)) {
+                return true;
             }
-            return false;
         }
+
+        return false;
     }
 
     return true;
 }
 
-let hasAudioContext = "AudioContext" in globalThis;
-let hasAudioListener = "AudioListener" in globalThis;
-let hasOldAudioListener = hasAudioListener && "setPosition" in AudioListener.prototype;
-let hasNewAudioListener = hasAudioListener && "positionX" in AudioListener.prototype;
-let attemptResonanceAPI = hasAudioListener;
+let tryNewAudioListener = hasNewAudioListener;
+let tryOldAudioListener = hasOldAudioListener;
+let tryAudioListener = hasAudioListener;
+let tryResonanceAPI = hasAudioListener;
 
 interface AudioManagerEvents {
     audioReady: TypedEvent<"audioReady">,
@@ -87,9 +88,14 @@ interface AudioManagerEvents {
 }
 
 export enum SpatializerType {
-    Low = "volumescale",
-    Medium = "webaudiopanner",
-    High = "resonance"
+    None = "none",
+    Low = "low",
+    Medium = "medium",
+    High = "high"
+}
+
+function isMediaStreamAudioDestinationNode(destination: AudioDestinationNode | MediaStreamAudioDestinationNode): destination is MediaStreamAudioDestinationNode {
+    return canChangeAudioOutput && "stream" in destination;
 }
 
 /**
@@ -100,26 +106,30 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
     private maxDistance = 10;
     private rolloff = 1;
     private _algorithm = "logarithmic";
-    private transitionTime = 0.5;
+    transitionTime = 0.5;
     private _offsetRadius = 0;
 
-    private clips = new Map<string, AudioSource>();
-    private users = new Map<string, AudioSource>();
-    private analysers = new Map<string, ActivityAnalyser>();
+    private clips = new Map<string, IPlayableSource>();
+    private users = new Map<string, AudioStreamSource>();
 
+    public localUserID: string = null;
     private sortedUserIDs = new Array<string>();
-    private localUserID: string = null;
 
-    private listener: BaseListener = null;
-    private audioContext: AudioContext = null;
-    private element: HTMLAudioElementWithSinkID = null;
+    localOutput: AudioDestination = null;
+
+    listener: BaseListener = null;
+    //audioContext: AudioContext = null;
     private destination: AudioDestinationNode | MediaStreamAudioDestinationNode = null;
-    private _audioOutputDeviceID: string = null;
-
-    private onAudioActivity: (evt: AudioActivityEvent) => void;
 
     private fetcher: IFetcher;
-    private type: SpatializerType;
+    private _type: SpatializerType;
+
+    devices = new DeviceManager();
+
+    private _ready: Promise<void>;
+    get ready() {
+        return this._ready;
+    }
 
     /**
      * Creates a new manager of audio sources, destinations, and their spatialization.
@@ -128,15 +138,28 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
         super();
 
         this.fetcher = fetcher || new Fetcher();
+
+        this.setLocalUserID(DEFAULT_LOCAL_USER_ID);
+
+        //this.audioContext = new AudioContext();
+
+        if (canChangeAudioOutput) {
+            this.destination = MediaStreamDestination("final-destination",);
+        }
+        else {
+            this.destination = audioCtx.destination;
+        }
+
+        this.localOutput = new AudioDestination(this.destination);
+
+        this._ready = audioReady
+            .then(async () => {
+                if (isMediaStreamAudioDestinationNode(this.destination)) {
+                    await this.devices.setDestination(this.destination);
+                }
+            });
+
         this.type = type || SpatializerType.Medium;
-
-        this.onAudioActivity = (evt: AudioActivityEvent) => {
-            audioActivityEvt.id = evt.id;
-            audioActivityEvt.isActive = evt.isActive;
-            this.dispatchEvent(audioActivityEvt);
-        };
-
-        this.createContext();
 
         Object.seal(this);
     }
@@ -154,189 +177,154 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
         return this._algorithm;
     }
 
-    addEventListener<K extends string & keyof AudioManagerEvents>(type: K, callback: (evt: Event & AudioManagerEvents[K]) => any, options: AddEventListenerOptions = null): void {
-        if (type === audioReadyEvt.type
-            && this.ready) {
-            callback(audioReadyEvt as AudioManagerEvents[K]);
+    protected checkAddEventListener<T extends Event>(type: string, callback: (evt: T) => any) {
+        if (type === audioReadyEvt.type && this.isReady) {
+            callback(audioReadyEvt as any as T);
+            return false;
         }
-        else {
-            super.addEventListener(type, callback, options);
-        }
+        return true;
     }
 
-    get ready(): boolean {
-        return this.audioContext && this.audioContext.state === "running";
+    get isReady(): boolean {
+        return audioCtx.state !== "suspended";
     }
 
-    /** 
-     * Perform the audio system initialization, after a user gesture 
-     **/
-    async start(): Promise<void> {
-        await this.audioContext.resume();
-        await this.setAudioOutputDeviceID(this._audioOutputDeviceID);
-        if (this.element) {
-            await this.element.play();
-        }
+    get isRunning(): boolean {
+        return audioCtx.state === "running";
     }
 
     update(): void {
-        if (this.audioContext) {
-            const t = this.currentTime;
+        const t = this.currentTime;
 
-            for (const clip of this.clips.values()) {
-                clip.update(t);
-            }
+        this.localOutput.update(t);
 
-            for (const user of this.users.values()) {
-                user.update(t);
-            }
+        for (const clip of this.clips.values()) {
+            clip.update(t);
+        }
 
-            for (const analyser of this.analysers.values()) {
-                analyser.update();
-            }
+        for (const user of this.users.values()) {
+            user.update(t);
         }
     }
 
-    /**
-     * If no audio context is currently available, creates one, and initializes the
-     * spatialization of its listener.
-     * 
-     * If WebAudio isn't available, a mock audio context is created that provides
-     * ersatz playback timing.
-     **/
-    createContext(): void {
-        if (!this.audioContext) {
-            this.audioContext = new AudioContext();
 
-            if (canChangeAudioOutput) {
-                this.destination = this.audioContext.createMediaStreamDestination();
-                this.element = Audio(
-                    playsInline,
-                    autoPlay,
-                    srcObject(this.destination.stream),
-                    styles(
-                        display("none")));
-                document.body.appendChild(this.element);
+    get type() {
+        return this._type;
+    }
+
+    set type(type: SpatializerType) {
+        const inputType = type;
+
+        if (type !== SpatializerType.High
+            && type !== SpatializerType.Medium
+            && type !== SpatializerType.Low
+            && type !== SpatializerType.None) {
+            assertNever(type, "Invalid spatialization type: ");
+        }
+
+        // These checks are done in an arcane way because it makes the fallback logic
+        // for each step self-contained. It's easier to look at a single step and determine
+        // wether or not it is correct, without having to look at previous blocks of code.
+        if (type === SpatializerType.High) {
+            if (tryResonanceAPI) {
+                try {
+                    this.listener = new ResonanceAudioListener();
+                }
+                catch (exp) {
+                    tryResonanceAPI = false;
+                    type = SpatializerType.Medium;
+                    console.warn("Resonance Audio API not available!", exp);
+                }
             }
             else {
-                this.destination = this.audioContext.destination;
+                type = SpatializerType.Medium;
             }
+        }
+        else {
+            tryResonanceAPI = false;
+        }
 
-            // These checks are done in an arcane way because it makes the fallback logic
-            // for each step self-contained. It's easier to look at a single step and determine
-            // wether or not it is correct, without having to look at previous blocks of code.
-
-            if (this.type === SpatializerType.High) {
-                if (hasAudioContext && hasAudioListener && attemptResonanceAPI) {
+        if (type === SpatializerType.Medium) {
+            if (!tryResonanceAPI && tryAudioListener) {
+                if (tryNewAudioListener) {
                     try {
-                        this.listener = new ResonanceAudioListener(this.audioContext, this.destination);
+                        this.listener = new WebAudioListenerNew();
                     }
                     catch (exp) {
-                        attemptResonanceAPI = false;
-                        this.type = SpatializerType.Medium;
-                        console.warn("Resonance Audio API not available!", exp);
+                        tryNewAudioListener = false;
+                        console.warn("No AudioListener.positionX property!", exp);
                     }
                 }
-                else {
-                    this.type = SpatializerType.Medium;
-                }
-            }
 
-            if (this.type === SpatializerType.Medium) {
-                if (hasAudioContext && hasAudioListener) {
-                    if (hasNewAudioListener) {
-                        try {
-                            this.listener = new WebAudioListenerNew(this.audioContext, this.destination);
-                        }
-                        catch (exp) {
-                            hasNewAudioListener = false;
-                            console.warn("No AudioListener.positionX property!", exp);
-                        }
+                if (!tryNewAudioListener && tryOldAudioListener) {
+                    try {
+                        this.listener = new WebAudioListenerOld();
                     }
-
-                    if (!hasNewAudioListener && hasOldAudioListener) {
-                        try {
-                            this.listener = new WebAudioListenerOld(this.audioContext, this.destination);
-                        }
-                        catch (exp) {
-                            hasOldAudioListener = false;
-                            console.warn("No WebAudio API!", exp);
-                        }
-                    }
-
-                    if (!hasNewAudioListener && !hasOldAudioListener) {
-                        this.type = SpatializerType.Low;
-                        hasAudioListener = false;
+                    catch (exp) {
+                        tryOldAudioListener = false;
+                        console.warn("No WebAudio API!", exp);
                     }
                 }
-                else {
-                    this.type = SpatializerType.Low;
+
+                if (!tryNewAudioListener && !tryOldAudioListener) {
+                    type = SpatializerType.Low;
+                    tryAudioListener = false;
                 }
-            }
-
-            if (this.type === SpatializerType.Low) {
-                this.listener = new VolumeScalingListener(this.audioContext, this.destination);
-            }
-
-            if (this.listener === null) {
-                throw new Error("Calla requires a functioning WebAudio system.");
-            }
-
-            if (this.ready) {
-                this.start();
-                this.dispatchEvent(audioReadyEvt);
             }
             else {
-                onUserGesture(
-                    () => this.dispatchEvent(audioReadyEvt),
-                    async () => {
-                        await this.start();
-                        return this.ready;
-                    });
+                type = SpatializerType.Low;
             }
         }
-    }
 
-    getAudioOutputDeviceID(): string {
-        return this.element?.sinkId;
-    }
+        if (type === SpatializerType.Low) {
+            this.listener = new VolumeScalingListener();
+        }
+        else if (type === SpatializerType.None) {
+            this.listener = new NoSpatializationListener();
+        }
 
-    async setAudioOutputDeviceID(deviceID: string): Promise<void> {
-        this._audioOutputDeviceID = deviceID || "";
-        if (this.element
-            && this._audioOutputDeviceID !== this.element.sinkId) {
-            await this.element.setSinkId(this._audioOutputDeviceID);
+        if (!this.listener) {
+            throw new Error("Calla requires a functioning WebAudio system. Could not create one for type: " + inputType);
+        }
+        else if (type !== inputType) {
+            console.warn(`Wasn't able to create the listener type ${inputType}. Fell back to ${type} instead.`);
+        }
+
+        this._type = type;
+
+        this.localOutput.spatializer = this.listener;
+        for (const clip of this.clips.values()) {
+            clip.spatializer = this.createSpatializer(clip.spatialized, false);
+        }
+
+        for (const user of this.users.values()) {
+            user.spatializer = this.createSpatializer(user.spatialized, false);
         }
     }
 
     /**
      * Creates a spatialzer for an audio source.
-     * @param id
-     * @param source - the audio element that is being spatialized.
      * @param spatialize - whether or not the audio stream should be spatialized. Stereo audio streams that are spatialized will get down-mixed to a single channel.
+     * @param isRemoteStream - whether or not the audio stream is coming from a remote user.
      */
-    createSpatializer(id: string, source: AudioNode, spatialize: boolean): BaseNode {
-        if (!this.listener) {
-            throw new Error("Audio context isn't ready");
-        }
-
-        return this.listener.createSpatializer(id, source, spatialize, this.audioContext);
+    createSpatializer(spatialize: boolean, isRemoteStream: boolean): BaseEmitter {
+        return this.listener.createSpatializer(spatialize, isRemoteStream, this.localOutput);
     }
 
     /**
      * Gets the current playback time.
      */
     get currentTime(): number {
-        return this.audioContext.currentTime;
+        return audioCtx.currentTime;
     }
 
     /**
      * Create a new user for audio processing.
      */
-    createUser(id: string): AudioSource {
-        let user: AudioSource = this.users.get(id);
+    createUser(id: string): AudioStreamSource {
+        let user: AudioStreamSource = this.users.get(id);
         if (!user) {
-            user = new AudioSource(id);
+            user = new AudioStreamSource(id);
             this.users.set(id, user);
             arraySortedInsert(this.sortedUserIDs, id);
             this.updateUserOffsets();
@@ -348,38 +336,23 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
     /**
      * Create a new user for the audio listener.
      */
-    createLocalUser(id: string): AudioSource {
-        this.localUserID = id;
-
-        let oldID: string = null;
-        let user: AudioSource = null;
-
-        for (const entry of this.users.entries()) {
-            if (entry[1].spatializer === this.listener) {
-                [oldID, user] = entry;
-                break;
-            }
-        }
-
-        if (user) {
-            this.users.delete(oldID);
-            arrayRemove(this.sortedUserIDs, oldID);
-            this.users.set(id, user);
-            arraySortedInsert(this.sortedUserIDs, id);
+    setLocalUserID(id: string): AudioDestination {
+        if (this.localOutput) {
+            arrayRemove(this.sortedUserIDs, this.localUserID);
+            this.localUserID = id;
+            arraySortedInsert(this.sortedUserIDs, this.localUserID);
             this.updateUserOffsets();
         }
         else {
-            user = this.createUser(id);
-            user.spatializer = this.listener;
         }
 
-        return user;
+        return this.localOutput;
     }
 
     /**
      * Creates a new sound effect from a series of fallback paths
      * for media files.
-     * @param name - the name of the sound effect, to reference when executing playback.
+     * @param id - the name of the sound effect, to reference when executing playback.
      * @param looping - whether or not the sound effect should be played on loop.
      * @param autoPlaying - whether or not the sound effect should be played immediately.
      * @param spatialize - whether or not the sound effect should be spatialized.
@@ -387,11 +360,23 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * @param path - a path for loading the media of the sound effect.
      * @param onProgress - an optional callback function to use for tracking progress of loading the clip.
      */
-    async createClip(name: string, looping: boolean, autoPlaying: boolean, spatialize: boolean, vol: number, path: string, onProgress?: progressCallback): Promise<AudioSource> {
+    async createClip(id: string, looping: boolean, autoPlaying: boolean, spatialize: boolean, vol: number, path: string, onProgress?: progressCallback): Promise<IPlayableSource> {
         if (path == null || path.length === 0) {
             throw new Error("No clip source path provided");
         }
 
+        const clip = useElementSourceForClips
+            ? await this.createAudioElementSource(id, looping, autoPlaying, spatialize, path, onProgress)
+            : await this.createAudioBufferSource(id, looping, autoPlaying, spatialize, path, onProgress);
+
+        clip.volume = vol;
+
+        this.clips.set(id, clip);
+
+        return clip;
+    }
+
+    private async getAudioBlob(path: string, onProgress: progressCallback): Promise<Blob> {
         let goodBlob: Blob = null;
         if (!shouldTry(path)) {
             if (onProgress) {
@@ -399,7 +384,7 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
             }
         }
         else {
-            const blob = await this.fetcher.getBlob(path, onProgress);
+            const blob = await this.fetcher.getBlob(path, null, onProgress);
             if (testAudio.canPlayType(blob.type)) {
                 goodBlob = blob;
             }
@@ -409,21 +394,46 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
             throw new Error("Cannot play file: " + path);
         }
 
-        const buffer = await goodBlob.arrayBuffer();
-        const data = await this.audioContext.decodeAudioData(buffer);
-        const source = this.audioContext.createBufferSource();
-        source.buffer = data;
-        source.loop = looping;
+        return goodBlob;
+    }
 
-        const clip = new AudioSource("audio-clip-" + name);
-        clip.spatializer = this.createSpatializer(name, source, spatialize);
-        clip.spatializer.volume = vol;
-
-        if (autoPlaying) {
-            clip.spatializer.play();
+    private async createAudioElementSource(id: string, looping: boolean, autoPlaying: boolean, spatialize: boolean, path: string, onProgress?: progressCallback): Promise<IPlayableSource> {
+        if (onProgress) {
+            onProgress(0, 1);
         }
 
-        this.clips.set(name, clip);
+        const blob = await this.getAudioBlob(path, onProgress);
+        const file = URL.createObjectURL(blob);
+        const elem = BackgroundAudio(
+            autoPlaying,
+            false,
+            loop(looping),
+            src(file));
+        await once(elem, "canplaythrough", "error");
+        const source = MediaElementSource("audio-element-source-" + id, elem);
+        if (onProgress) {
+            onProgress(1, 1);
+        }
+
+        return new AudioElementSource("audio-clip-" + id, source, this.createSpatializer(spatialize, false));
+    }
+
+    private async createAudioBufferSource(id: string, looping: boolean, autoPlaying: boolean, spatialize: boolean, path: string, onProgress?: progressCallback): Promise<IPlayableSource> {
+        let goodBlob: Blob = await this.getAudioBlob(path, onProgress);
+
+        const b = await goodBlob.arrayBuffer();
+        const data = await decodeAudioData(b);
+        const source = BufferSource(
+            "audio-buffer-source-" + id,
+            buffer(data),
+            loopAudio(looping)
+        );
+
+        const clip = new AudioBufferSpawningSource("audio-clip-" + id, source, this.createSpatializer(spatialize, false));
+
+        if (autoPlaying) {
+            clip.play();
+        }
 
         return clip;
     }
@@ -437,40 +447,40 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * @param name - the name of the effect to play.
      */
     async playClip(name: string): Promise<void> {
-        if (this.ready && this.hasClip(name)) {
+        if (this.isReady && this.hasClip(name)) {
             const clip = this.clips.get(name);
-            await clip.spatializer.play();
+            await clip.play();
         }
     }
 
     stopClip(name: string): void {
-        if (this.ready && this.hasClip(name)) {
+        if (this.isReady && this.hasClip(name)) {
             const clip = this.clips.get(name);
-            clip.spatializer.stop();
+            clip.stop();
         }
-    }
-
-    /**
-     * Get an audio source.
-     * @param sources - the collection of audio sources from which to retrieve.
-     * @param id - the id of the audio source to get
-     **/
-    private getSource(sources: Map<string, AudioSource>, id: string): AudioSource {
-        return sources.get(id) || null;
     }
 
     /**
      * Get an existing user.
      */
-    getUser(id: string): AudioSource {
-        return this.getSource(this.users, id);
+    getUser(id: string): AudioStreamSource {
+        return this.users.get(id);
     }
 
     /**
      * Get an existing audio clip.
      */
-    getClip(id: string): AudioSource {
-        return this.getSource(this.clips, id);
+    getClip(id: string): IPlayableSource {
+        return this.clips.get(id);
+    }
+
+    renameClip(id: string, newID: string): void {
+        const clip = this.clips.get(id);
+        if (clip) {
+            clip.id = "audio-clip-" + id;
+            this.clips.delete(id);
+            this.clips.set(newID, clip);
+        }
     }
 
     /**
@@ -478,15 +488,14 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * @param sources - the collection of audio sources from which to remove.
      * @param id - the id of the audio source to remove
      **/
-    private removeSource(sources: Map<string, AudioSource>, id: string): void {
-        if (sources.has(id)) {
-            using(sources.get(id), (source) => {
-                if (source.spatializer) {
-                    source.spatializer.stop();
-                }
-                sources.delete(id);
-            });
+    private removeSource<T extends IDisposable>(sources: Map<string, T>, id: string): T {
+        const source = sources.get(id);
+        if (source) {
+            sources.delete(id);
+            source.dispose();
         }
+
+        return source;
     }
 
     /**
@@ -501,14 +510,15 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
     /**
      * Remove an audio clip from audio processing.
      **/
-    removeClip(id: string): void {
-        this.removeSource(this.clips, id);
+    removeClip(id: string): IPlayableSource {
+        return this.removeSource(this.clips, id);
     }
 
-    private createSourceFromStream(stream: MediaStream): AudioNode {
+    private createSourceFromStream(stream: MediaStream): AudioStreamSourceNode {
         if (useTrackSource) {
             const tracks = stream.getAudioTracks()
-                .map((track) => this.audioContext.createMediaStreamTrackSource(track));
+                .map((track) =>
+                    MediaStreamTrackSource("track-source-" + track.id, track));
             if (tracks.length === 0) {
                 throw new Error("No audio tracks!");
             }
@@ -516,55 +526,40 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
                 return tracks[0];
             }
             else {
-                const merger = this.audioContext.createChannelMerger(tracks.length);
+                const merger = ChannelMerger(
+                    "track-merger-" + stream.id,
+                    tracks.length);
                 for (const track of tracks) {
-                    track.connect(merger);
+                    connect(track, merger);
                 }
                 return merger;
             }
         }
         else {
-            const elem = Audio(
-                playsInline(true),
-                autoPlay(true),
-                muted(!useElementSource),
-                controls(false),
-                styles(display("none")),
-                srcObject(stream));
+            const elem = BackgroundAudio(true, !useElementSourceForUsers);
 
-            document.body.appendChild(elem);
+            elem.srcObject = stream;
             elem.play();
 
-            if (useElementSource) {
-                return this.audioContext.createMediaElementSource(elem);
+            if (useElementSourceForUsers) {
+                return MediaElementSource("media-element-source-" + stream.id, elem);
             }
             else {
-                return this.audioContext.createMediaStreamSource(stream);
+                elem.muted = true;
+                return MediaStreamSource("media-stream-source-" + stream.id, stream);
             }
         }
     }
 
-    async setUserStream(id: string, stream: MediaStream): Promise<void> {
+    setUserStream(id: string, stream: MediaStream): void {
         if (this.users.has(id)) {
-            if (this.analysers.has(id)) {
-                using(this.analysers.get(id), (analyser) => {
-                    this.analysers.delete(id);
-                    analyser.removeEventListener("audioActivity", this.onAudioActivity);
-                });
-            }
-
             const user = this.users.get(id);
             user.spatializer = null;
 
             if (stream) {
-                await waitFor(() => stream.active);
-                const source = this.createSourceFromStream(stream);
-                user.spatializer = this.createSpatializer(id, source, true);
+                user.source = this.createSourceFromStream(stream);
+                user.spatializer = this.createSpatializer(true, true);
                 user.spatializer.setAudioProperties(this.minDistance, this.maxDistance, this.rolloff, this.algorithm, this.transitionTime);
-
-                const analyser = new ActivityAnalyser(user, this.audioContext, BUFFER_SIZE);
-                analyser.addEventListener("audioActivity", this.onAudioActivity);
-                this.analysers.set(id, analyser);
             }
         }
     }
@@ -607,32 +602,32 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * Get a pose, normalize the transition time, and perform on operation on it, if it exists.
      * @param sources - the collection of poses from which to retrieve the pose.
      * @param id - the id of the pose for which to perform the operation.
-     * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
      * @param poseCallback
      */
-    private withPose<T>(sources: Map<string, AudioSource>, id: string, dt: number, poseCallback: withPoseCallback<T>): T {
-        if (sources.has(id)) {
-            const source = sources.get(id);
-            const pose = source.pose;
-
-            if (dt == null) {
-                dt = this.transitionTime;
-            }
-
-            return poseCallback(pose, dt);
+    private withPose<ElementT extends IPoseable, ResultT>(sources: Map<string, ElementT>, id: string, poseCallback: withPoseCallback<ResultT>): ResultT {
+        const source = sources.get(id);
+        let pose: InterpolatedPose = null;
+        if (source) {
+            pose = source.pose;
+        }
+        else if (id === this.localUserID) {
+            pose = this.localOutput.pose;
         }
 
-        return null;
+        if (!pose) {
+            return null;
+        }
+
+        return poseCallback(pose);
     }
 
     /**
      * Get a user pose, normalize the transition time, and perform on operation on it, if it exists.
      * @param id - the id of the user for which to perform the operation.
-     * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
      * @param poseCallback
      */
-    private withUser<T>(id: string, dt: number, poseCallback: withPoseCallback<T>): T {
-        return this.withPose(this.users, id, dt, poseCallback);
+    private withUser<T>(id: string, poseCallback: withPoseCallback<T>): T {
+        return this.withPose(this.users, id, poseCallback);
     }
 
     /**
@@ -643,7 +638,7 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * @param z - the lateral component of the offset.
      */
     private setUserOffset(id: string, x: number, y: number, z: number): void {
-        this.withUser(id, null, (pose) => {
+        this.withUser(id, (pose) => {
             pose.setOffset(x, y, z);
         });
     }
@@ -653,9 +648,7 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * @param id - the id of the user for which to set the offset.
      */
     public getUserOffset(id: string): vec3 {
-        return this.withUser(id, null, (pose) => {
-            return pose.offset;
-        });
+        return this.withUser(id, pose => pose.offset);
     }
 
     /**
@@ -672,9 +665,9 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * @param uz - the lateral component of the up vector.
      * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
      **/
-    setUserPose(id: string, px: number, py: number, pz: number, fx: number, fy: number, fz: number, ux: number, uy: number, uz: number, dt: number = null): void {
-        this.withUser(id, dt, (pose, dt) => {
-            pose.setTarget(px, py, pz, fx, fy, fz, ux, uy, uz, this.currentTime, dt);
+    setUserPose(id: string, px: number, py: number, pz: number, fx: number, fy: number, fz: number, ux: number, uy: number, uz: number): void {
+        this.withUser(id, (pose) => {
+            pose.setTarget(px, py, pz, fx, fy, fz, ux, uy, uz, this.currentTime, this.transitionTime);
         });
     }
 
@@ -684,8 +677,8 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
      * @param poseCallback
      */
-    private withClip<T>(id: string, dt: number, poseCallback: withPoseCallback<T>): T {
-        return this.withPose(this.clips, id, dt, poseCallback);
+    private withClip<T>(id: string, poseCallback: withPoseCallback<T>): T {
+        return this.withPose(this.clips, id, poseCallback);
     }
 
     /**
@@ -694,11 +687,10 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * @param x - the horizontal component of the position.
      * @param y - the vertical component of the position.
      * @param z - the lateral component of the position.
-     * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
      **/
-    setClipPosition(id: string, x: number, y: number, z: number, dt: number = null): void {
-        this.withClip(id, dt, (pose, dt) => {
-            pose.setTargetPosition(x, y, z, this.currentTime, dt);
+    setClipPosition(id: string, x: number, y: number, z: number): void {
+        this.withClip(id, (pose) => {
+            pose.setTargetPosition(x, y, z, this.currentTime, this.transitionTime);
         });
     }
 
@@ -711,11 +703,10 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * @param ux - the horizontal component of the up vector.
      * @param uy - the vertical component of the up vector.
      * @param uz - the lateral component of the up vector.
-     * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
      **/
-    setClipOrientation(id: string, fx: number, fy: number, fz: number, ux: number, uy: number, uz: number, dt: number = null): void {
-        this.withClip(id, dt, (pose, dt) => {
-            pose.setTargetOrientation(fx, fy, fz, ux, uy, uz, this.currentTime, dt);
+    setClipOrientation(id: string, fx: number, fy: number, fz: number, ux: number, uy: number, uz: number): void {
+        this.withClip(id, (pose) => {
+            pose.setTargetOrientation(fx, fy, fz, ux, uy, uz, this.currentTime, this.transitionTime);
         });
     }
 
@@ -731,11 +722,10 @@ export class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * @param ux - the horizontal component of the up vector.
      * @param uy - the vertical component of the up vector.
      * @param uz - the lateral component of the up vector.
-     * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
      **/
-    setClipPose(id: string, px: number, py: number, pz: number, fx: number, fy: number, fz: number, ux: number, uy: number, uz: number, dt: number = null): void {
-        this.withClip(id, dt, (pose, dt) => {
-            pose.setTarget(px, py, pz, fx, fy, fz, ux, uy, uz, this.currentTime, dt);
+    setClipPose(id: string, px: number, py: number, pz: number, fx: number, fy: number, fz: number, ux: number, uy: number, uz: number): void {
+        this.withClip(id, (pose) => {
+            pose.setTarget(px, py, pz, fx, fy, fz, ux, uy, uz, this.currentTime, 0.5);
         });
     }
 }

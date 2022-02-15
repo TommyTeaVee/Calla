@@ -1,4 +1,4 @@
-import type { Context2D } from "kudzu/html/canvas";
+import { CanvasImageTypes, Context2D } from "kudzu/html/canvas";
 import { IFetcher } from "kudzu/io/IFetcher";
 export declare class TileSet {
     private url;
@@ -8,7 +8,7 @@ export declare class TileSet {
     tileHeight: number;
     tilesPerRow: number;
     tileCount: number;
-    image: HTMLImageElement;
+    image: CanvasImageTypes;
     collision: Map<number, boolean>;
     constructor(url: URL, fetcher: IFetcher);
     load(): Promise<void>;

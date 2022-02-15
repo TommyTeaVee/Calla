@@ -13,35 +13,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+/**
+ * @file Spatially encodes input using weighted spherical harmonics.
+ * @author Andrew Allen <bitllama@google.com>
+ */
+import { ChannelMerger, connect, disconnect, Gain } from "kudzu/audio";
 import { MAX_RE_WEIGHTS, SPHERICAL_HARMONICS, SPHERICAL_HARMONICS_MAX_ORDER } from "./tables";
 import { DEFAULT_AMBISONIC_ORDER, DEFAULT_AZIMUTH, DEFAULT_ELEVATION, DEFAULT_SOURCE_WIDTH, log } from "./utils";
 /**
  * Spatially encodes input using weighted spherical harmonics.
  */
 export class Encoder {
-    /**
-     * Spatially encodes input using weighted spherical harmonics.
-     */
-    constructor(context, options) {
-        this.channelGain = new Array();
-        this.merger = null;
-        // Use defaults for undefined arguments.
-        options = Object.assign({
-            ambisonicOrder: DEFAULT_AMBISONIC_ORDER,
-            azimuth: DEFAULT_AZIMUTH,
-            elevation: DEFAULT_ELEVATION,
-            sourceWidth: DEFAULT_SOURCE_WIDTH
-        }, options);
-        this.context = context;
-        // Create I/O nodes.
-        this.input = context.createGain();
-        this.output = context.createGain();
-        // Set initial order, angle and source width.
-        this.setAmbisonicOrder(options.ambisonicOrder);
-        this.azimuth = options.azimuth;
-        this.elevation = options.elevation;
-        this.setSourceWidth(options.sourceWidth);
-    }
+    channelGain = new Array();
+    merger = null;
+    ambisonicOrder;
+    azimuth;
+    elevation;
+    spreadIndex;
+    input;
+    output;
     /**
      * Validate the provided ambisonic order.
      * @param ambisonicOrder Desired ambisonic order.
@@ -63,35 +53,54 @@ export class Encoder {
         return ambisonicOrder;
     }
     /**
+     * Spatially encodes input using weighted spherical harmonics.
+     */
+    constructor(options) {
+        // Use defaults for undefined arguments.
+        options = Object.assign({
+            ambisonicOrder: DEFAULT_AMBISONIC_ORDER,
+            azimuth: DEFAULT_AZIMUTH,
+            elevation: DEFAULT_ELEVATION,
+            sourceWidth: DEFAULT_SOURCE_WIDTH
+        }, options);
+        // Create I/O nodes.
+        this.input = Gain("encoder-input");
+        this.output = Gain("encoder-output");
+        // Set initial order, angle and source width.
+        this.setAmbisonicOrder(options.ambisonicOrder);
+        this.azimuth = options.azimuth;
+        this.elevation = options.elevation;
+        this.setSourceWidth(options.sourceWidth);
+    }
+    /**
      * Set the desired ambisonic order.
      * @param ambisonicOrder Desired ambisonic order.
      */
     setAmbisonicOrder(ambisonicOrder) {
         this.ambisonicOrder = Encoder.validateAmbisonicOrder(ambisonicOrder);
-        this.input.disconnect();
-        for (let i = 0; i < this.channelGain.length; i++) {
-            this.channelGain[i].disconnect();
-        }
-        if (this.merger != null) {
-            this.merger.disconnect();
-        }
+        this.dispose();
         // Create audio graph.
         let numChannels = (this.ambisonicOrder + 1) * (this.ambisonicOrder + 1);
-        this.merger = this.context.createChannelMerger(numChannels);
+        this.merger = ChannelMerger("encoder-merger", numChannels);
         this.channelGain = new Array(numChannels);
         for (let i = 0; i < numChannels; i++) {
-            this.channelGain[i] = this.context.createGain();
-            this.input.connect(this.channelGain[i]);
-            this.channelGain[i].connect(this.merger, 0, i);
+            this.channelGain[i] = Gain("encoder-channel-" + i);
+            connect(this.input, this.channelGain[i]);
+            connect(this.channelGain[i], this.merger, 0, i);
         }
-        this.merger.connect(this.output);
+        connect(this.merger, this.output);
     }
+    disposed = false;
     dispose() {
-        this.merger.disconnect(this.output);
-        let numChannels = (this.ambisonicOrder + 1) * (this.ambisonicOrder + 1);
-        for (let i = 0; i < numChannels; ++i) {
-            this.channelGain[i].disconnect(this.merger, 0, i);
-            this.input.disconnect(this.channelGain[i]);
+        if (!this.disposed) {
+            disconnect(this.input);
+            for (const node of this.channelGain) {
+                disconnect(node);
+            }
+            if (this.merger) {
+                disconnect(this.merger);
+            }
+            this.disposed = true;
         }
     }
     /**

@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { connect, Convolver, Delay, disconnect, Gain } from "kudzu/audio";
 import type { IDisposable } from "kudzu/using";
 import {
     DEFAULT_REVERB_BANDWIDTH,
@@ -81,7 +82,7 @@ export interface LateReflectionsOptions {
 export class LateReflections implements IDisposable {
     private bandwidthCoeff: number;
     private tailonsetSamples: number;
-    private context: AudioContext;
+    private context: BaseAudioContext;
     private predelay: DelayNode;
     private convolver: ConvolverNode;
 
@@ -90,7 +91,7 @@ export class LateReflections implements IDisposable {
     /**
     * Late-reflections reverberation filter for Ambisonic content.
     */
-    constructor(context: AudioContext, options?: LateReflectionsOptions) {
+    constructor(context: BaseAudioContext, options?: LateReflectionsOptions) {
         // Use defaults for undefined arguments.
         options = Object.assign({
             durations: DEFAULT_REVERB_DURATIONS.slice(),
@@ -107,10 +108,10 @@ export class LateReflections implements IDisposable {
 
         // Create nodes.
         this.context = context;
-        this.input = context.createGain();
-        this.predelay = context.createDelay(delaySecs);
-        this.convolver = context.createConvolver();
-        this.output = context.createGain();
+        this.input = Gain("late-reflections-input");
+        this.predelay = Delay("late-reflections-predelay", delaySecs);
+        this.convolver = Convolver("late-reflections-convolver");
+        this.output = Gain("late-reflections-output");
 
         // Set reverb attenuation.
         this.output.gain.value = options.gain;
@@ -119,18 +120,22 @@ export class LateReflections implements IDisposable {
         this.convolver.normalize = false;
 
         // Connect nodes.
-        this.input.connect(this.predelay);
-        this.predelay.connect(this.convolver);
-        this.convolver.connect(this.output);
+        connect(this.input, this.predelay);
+        connect(this.predelay, this.convolver);
+        connect(this.convolver, this.output);
 
         // Compute IR using RT60 values.
         this.setDurations(options.durations);
     }
 
+    private disposed = false;
     dispose(): void {
-        this.input.disconnect(this.predelay);
-        this.predelay.disconnect(this.convolver);
-        this.convolver.disconnect(this.output);
+        if (!this.disposed) {
+            disconnect(this.input);
+            disconnect(this.predelay);
+            disconnect(this.convolver);
+            this.disposed = true;
+        }
     }
 
 

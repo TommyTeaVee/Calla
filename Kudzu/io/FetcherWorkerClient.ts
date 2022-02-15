@@ -1,134 +1,148 @@
-import { CubeMapFace } from "../graphics2d/CubeMapFace";
-import { InterpolationType } from "../graphics2d/InterpolationType";
-import { renderImageBitmapFaces } from "../graphics2d/renderFace";
-import { hasImageBitmap, hasOffscreenCanvasRenderingContext2D, MemoryImageTypes } from "../html/canvas";
-import { progressCallback } from "../tasks/progressCallback";
-import { splitProgress } from "../tasks/splitProgress";
+import { waitFor } from "../events/waitFor";
+import type { CanvasImageTypes } from "../html/canvas";
+import { hasImageBitmap } from "../html/canvas";
+import { createScript } from "../html/script";
+import type { progressCallback } from "../tasks/progressCallback";
 import { WorkerClient } from "../workers/WorkerClient";
-import { Fetcher } from "./Fetcher";
-import { getPartsReturnType } from "./getPartsReturnType";
+import type { BufferAndContentType } from "./BufferAndContentType";
+import { fileToImage } from "./Fetcher";
+import { IFetcher } from "./IFetcher";
 
-export class FetcherWorkerClient extends Fetcher {
+function isDOMParsersSupportedType(type: string): type is DOMParserSupportedType {
+    return type === "application/xhtml+xml"
+        || type === "application/xml"
+        || type === "image/svg+xml"
+        || type === "text/html"
+        || type === "text/xml";
+}
 
-    worker: WorkerClient;
-
-    constructor(scriptPath: string, minScriptPath: string, workerPoolSize: number = 10) {
-        super();
-
-        this.worker = new WorkerClient(scriptPath, minScriptPath, workerPoolSize);
+function bufferToXml(buffer: BufferAndContentType) {
+    if (!isDOMParsersSupportedType(buffer.contentType)) {
+        throw new Error(`Content-Type ${buffer.contentType} is not one supported by the DOM parser.`);
     }
 
-    async getBuffer(path: string, onProgress?: progressCallback): Promise<getPartsReturnType> {
-        if (this.worker.enabled) {
-            return await this.worker.execute("getBuffer", [path], onProgress);
+    const decoder = new TextDecoder();
+    const text = decoder.decode(buffer.buffer);
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(text, buffer.contentType);
+    return doc.documentElement;
+}
+
+export abstract class BaseFetcherWorkerClient<EventsT>
+    extends WorkerClient<EventsT>
+    implements IFetcher {
+
+    async getBuffer(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<BufferAndContentType> {
+        return await this.callMethod("getBuffer", [path, headers], onProgress);
+    }
+
+    async getBlob(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<Blob> {
+        const buffer = await this.getBuffer(path, headers, onProgress);
+        const blob = new Blob([buffer.buffer], {
+            type: buffer.contentType
+        });
+        return blob;
+    }
+
+    async getText(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<string> {
+        return await this.callMethod("getText", [path, headers], onProgress);
+    }
+
+    async getXml(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<HTMLElement> {
+        const buffer = await this.getBuffer(path, headers, onProgress);
+        return bufferToXml(buffer);
+    }
+
+    async getObject<T>(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<T> {
+        return await this.callMethod("getObject", [path, headers], onProgress);
+    }
+
+    async getFile(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<string> {
+        return await this.callMethod("getFile", [path, headers], onProgress);
+    }
+
+    async getImageBitmap(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<ImageBitmap> {
+        return await this.callMethod("getImageBitmap", [path, headers], onProgress);
+    }
+
+    async getCanvasImage(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<CanvasImageTypes> {
+        if (hasImageBitmap) {
+            return await this.getImageBitmap(path, headers, onProgress);
         }
         else {
-            return await super.getBuffer(path, onProgress);
+            const file = await this.getFile(path, headers, onProgress);
+            return await fileToImage(file);
         }
     }
 
-    async postObjectForBuffer<T>(path: string, obj:T, onProgress?: progressCallback): Promise<getPartsReturnType> {
-        if (this.worker.enabled) {
-            return await this.worker.execute("postObjectForBuffer", [path, obj], onProgress);
+    async postObject(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<void> {
+        await this.callMethod("postObject", [path, obj, contentType, headers], onProgress);
+    }
+
+    async postObjectForBuffer(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<BufferAndContentType> {
+        return await this.callMethod("postObjectForBuffer", [path, obj, contentType, headers], onProgress);
+    }
+
+    async postObjectForBlob(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<Blob> {
+        const buffer = await this.postObjectForBuffer(path, obj, contentType, headers, onProgress);
+        const blob = new Blob([buffer.buffer], {
+            type: buffer.contentType
+        });
+        return blob;
+    }
+
+    async postObjectForText(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<string> {
+        return await this.callMethod("postObjectForText", [path, obj, contentType, headers], onProgress);
+    }
+
+    async postObjectForXml(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<HTMLElement> {
+        const buffer = await this.postObjectForBuffer(path, obj, contentType, headers, onProgress);
+        return bufferToXml(buffer);
+    }
+
+    async postObjectForObject<T>(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<T> {
+        return await this.callMethod("postObjectForObject", [path, obj, contentType, headers], onProgress);
+    }
+
+    async postObjectForFile(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<string> {
+        return await this.callMethod("postObjectForFile", [path, obj, contentType, headers], onProgress);
+    }
+
+    async postObjectForImageBitmap(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<ImageBitmap> {
+        return await this.callMethod("postObjectForImageBitmap", [path, obj, contentType, headers], onProgress);
+    }
+
+    async postObjectForCanvasImage(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<CanvasImageTypes> {
+        if (hasImageBitmap) {
+            return await this.postObjectForImageBitmap(path, obj, contentType, headers, onProgress);
         }
         else {
-            return await super.postObjectForBuffer(path, obj, onProgress);
+            const file = await this.postObjectForFile(path, obj, contentType, headers, onProgress);
+            return await fileToImage(file);
         }
     }
 
-    async getObject<T>(path: string, onProgress?: progressCallback): Promise<T> {
-        if (this.worker.enabled) {
-            return await this.worker.execute("getObject", [path], onProgress);
+    async loadScript(path: string, test: () => boolean, onProgress?: progressCallback): Promise<void> {
+        if (!test()) {
+            const scriptLoadTask = waitFor(test);
+            const file = await this.getFile(path, null, onProgress);
+            createScript(file);
+            await scriptLoadTask;
         }
-        else {
-            return await super.getObject(path, onProgress);
-        }
-    }
-
-    async postObjectForObject<T, U>(path: string, obj: T, onProgress?: progressCallback): Promise<U> {
-        if (this.worker.enabled) {
-            return await this.worker.execute("postObjectForObject", [path, obj], onProgress);
-        }
-        else {
-            return await super.postObjectForObject(path, obj, onProgress);
+        else if (onProgress) {
+            onProgress(1, 1, "skip");
         }
     }
 
-    async getFile(path: string, onProgress?: progressCallback): Promise<string> {
-        if (this.worker.enabled) {
-            return await this.worker.execute("getFile", [path], onProgress);
+    async getWASM<T>(path: string, imports: Record<string, Record<string, WebAssembly.ImportValue>>, onProgress?: progressCallback): Promise<T> {
+        const wasmBuffer = await this.getBuffer(path, null, onProgress);
+        if (wasmBuffer.contentType !== "application/wasm") {
+            throw new Error("Server did not respond with WASM file. Was: " + wasmBuffer.contentType);
         }
-        else {
-            return await super.getFile(path, onProgress);
-        }
+        const wasmModule = await WebAssembly.instantiate(wasmBuffer.buffer, imports);
+        return (wasmModule.instance.exports as any) as T;
     }
+}
 
-    async postObjectForFile<T>(path: string, obj: T, onProgress?: progressCallback): Promise<string> {
-        if (this.worker.enabled) {
-            return await this.worker.execute("postObjectForFile", [path, obj], onProgress);
-        }
-        else {
-            return await super.postObjectForFile(path, obj, onProgress);
-        }
-    }
-
-    async getImageBitmap(path: string, onProgress?: progressCallback): Promise<ImageBitmap> {
-        if (this.worker.enabled) {
-            return await this.worker.execute("getImageBitmap", [path], onProgress);
-        }
-        else {
-            return await super.getImageBitmap(path, onProgress);
-        }
-    }
-
-    async postObjectForImageBitmap<T>(path: string, obj: T, onProgress?: progressCallback): Promise<ImageBitmap> {
-        if (this.worker.enabled && hasImageBitmap) {
-            return await this.worker.execute("postObjectForImageBitmap", [path, obj], onProgress);
-        }
-        else {
-            return await super.postObjectForImageBitmap(path, obj, onProgress);
-        }
-    }
-
-    async getCubes(path: string, onProgress?: progressCallback): Promise<MemoryImageTypes[]> {
-        if (this.worker.enabled
-            && hasImageBitmap
-            && hasOffscreenCanvasRenderingContext2D) {
-            return await this.worker.execute("getCubes", [path], onProgress);
-        }
-        else {
-            return await super.getCubes(path, onProgress);
-        }
-    }
-
-    async getEquiMaps(path: string, interpolation: InterpolationType, maxWidth: number, onProgress?: progressCallback): Promise<MemoryImageTypes[]> {
-        if (this.worker.enabled
-            && hasImageBitmap
-            && hasOffscreenCanvasRenderingContext2D) {
-            const splits = splitProgress(onProgress, [1, 6]);
-            const imgData = await this.getImageData(path, splits.shift());
-            return await renderImageBitmapFaces(
-                (readData: ImageData, faceName: CubeMapFace, interpolation: InterpolationType, maxWidth: number, onProgress?: progressCallback) =>
-                    this.worker.execute("renderFace", [readData, faceName, interpolation, maxWidth], onProgress),
-                imgData, interpolation, maxWidth, splits.shift());
-        }
-        else {
-            return await super.getEquiMaps(path, interpolation, maxWidth, onProgress);
-        }
-    }
-    /*
-
-
-export const getEquiMapImages = worker.createExecutor<ImageBitmap[] | CanvasTypes[]>(
-    "renderFace",
-    async (path: string, interpolation: InterpolationType, maxWidth: number, onProgress: progressCallback) => {
-        const splits = splitProgress(onProgress, [1, 6]);
-        const imgData = await getImageData(path, splits.shift());
-        return await renderImageBitmapFaces(
-            (readData: ImageData, faceName: CubeMapFace, interpolation: InterpolationType, maxWidth: number, onProgress: progressCallback) =>
-                worker.execute("renderFace", [readData, faceName, interpolation, maxWidth], onProgress),
-            imgData, interpolation, maxWidth, splits.shift());
-    },
-    (path: string, interpolation: InterpolationType, maxWidth: number, onProgress: progressCallback) => _getEquiMapCanvases(path, interpolation, maxWidth, onProgress));
-    */
+export class FetcherWorkerClient extends BaseFetcherWorkerClient<void>{
 }

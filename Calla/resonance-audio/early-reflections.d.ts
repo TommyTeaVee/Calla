@@ -58,7 +58,9 @@ export declare class EarlyReflections implements IDisposable {
     /**
      * Ray-tracing-based early reflections model.
      */
-    constructor(context: AudioContext, options?: Partial<EarlyReflectionsOptions>);
+    constructor(options?: Partial<EarlyReflectionsOptions>);
+    private disposed;
+    dispose(): void;
     /**
      * Set the room's properties which determines the characteristics of
      * reflections.
@@ -71,7 +73,6 @@ export declare class EarlyReflections implements IDisposable {
      * DEFAULT_REFLECTION_COEFFICIENTS}.
      */
     setRoomProperties(dimensions: RoomDimensions, coefficients: ReflectionCoefficients): void;
-    dispose(): void;
     /**
      * Set the listener's position (in meters),
      * where [0,0,0] is the center of the room.

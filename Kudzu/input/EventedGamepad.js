@@ -1,5 +1,6 @@
 import { TypedEvent, TypedEventBase } from "../events/EventBase";
 class GamepadButtonEvent extends TypedEvent {
+    button;
     constructor(type, button) {
         super(type);
         this.button = button;
@@ -7,40 +8,49 @@ class GamepadButtonEvent extends TypedEvent {
 }
 export class GamepadButtonUpEvent extends GamepadButtonEvent {
     constructor(button) {
-        super("gamepadButtonUp", button);
+        super("gamepadbuttonup", button);
     }
 }
 export class GamepadButtonDownEvent extends GamepadButtonEvent {
     constructor(button) {
-        super("gamepadButtonDown", button);
+        super("gamepadbuttondown", button);
     }
 }
 class GamepadAxisEvent extends TypedEvent {
-    constructor(type, axis) {
+    axis;
+    value;
+    constructor(type, axis, value) {
         super(type);
         this.axis = axis;
+        this.value = value;
     }
 }
 export class GamepadAxisMaxedEvent extends GamepadAxisEvent {
-    constructor(axis) {
-        super("gamepadAxisMaxed", axis);
+    constructor(axis, value) {
+        super("gamepadaxismaxed", axis, value);
     }
 }
 export class EventedGamepad extends TypedEventBase {
+    id;
+    displayId;
+    connected;
+    hand;
+    pose;
+    lastButtons = new Array();
+    buttons = new Array();
+    axes = new Array();
+    hapticActuators = new Array();
+    _isStick;
+    btnDownEvts = new Array();
+    btnUpEvts = new Array();
+    btnState = new Array();
+    axisThresholdMax = 0.9;
+    axisThresholdMin = 0.1;
+    axisMaxEvts = new Array();
+    axisMaxed = new Array();
+    sticks = new Array();
     constructor(pad) {
         super();
-        this.lastButtons = new Array();
-        this.buttons = new Array();
-        this.axes = new Array();
-        this.hapticActuators = new Array();
-        this.btnDownEvts = new Array();
-        this.btnUpEvts = new Array();
-        this.btnState = new Array();
-        this.axisThresholdMax = 0.9;
-        this.axisThresholdMin = 0.1;
-        this.axisMaxEvts = new Array();
-        this.axisMaxed = new Array();
-        this.sticks = new Array();
         this.id = pad.id;
         this.displayId = pad.displayId;
         this.connected = pad.connected;
@@ -54,7 +64,7 @@ export class EventedGamepad extends TypedEventBase {
             this.buttons[b] = pad.buttons[b];
         }
         for (let a = 0; a < pad.axes.length; ++a) {
-            this.axisMaxEvts[a] = new GamepadAxisMaxedEvent(a);
+            this.axisMaxEvts[a] = new GamepadAxisMaxedEvent(a, 0);
             this.axisMaxed[a] = false;
             if (this._isStick(a)) {
                 this.sticks[a / 2] = { x: 0, y: 0 };
@@ -84,11 +94,13 @@ export class EventedGamepad extends TypedEventBase {
             this.buttons[b] = pad.buttons[b];
         }
         for (let a = 0; a < pad.axes.length; ++a) {
-            const wasMaxed = this.axisMaxed[a], val = pad.axes[a], dir = Math.sign(val), mag = Math.abs(val), maxed = mag >= this.axisThresholdMax, mined = mag <= this.axisThresholdMin;
+            const wasMaxed = this.axisMaxed[a], val = pad.axes[a], dir = Math.sign(val), mag = Math.abs(val), maxed = mag >= this.axisThresholdMax, mined = mag <= this.axisThresholdMin, correctedVal = dir * (maxed ? 1 : (mined ? 0 : mag));
             if (maxed && !wasMaxed) {
+                this.axisMaxEvts[a].value = correctedVal;
                 this.dispatchEvent(this.axisMaxEvts[a]);
             }
-            this.axes[a] = dir * (maxed ? 1 : (mined ? 0 : mag));
+            this.axisMaxed[a] = maxed;
+            this.axes[a] = correctedVal;
         }
         for (let a = 0; a < this.axes.length - 1; a += 2) {
             const stick = this.sticks[a / 2];

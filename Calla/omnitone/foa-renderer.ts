@@ -22,7 +22,7 @@
 
 
 import { mat3, mat4 } from "gl-matrix";
-import { assertNever } from "kudzu/typeChecks";
+import { channelCount, channelCountMode, channelInterpretation, connect, disconnect, ErsatzAudioNode, Gain } from "kudzu/audio";
 import type { IDisposable } from "kudzu/using";
 import { BufferDataType, BufferList } from './buffer-list';
 import { FOAConvolver } from './foa-convolver';
@@ -36,7 +36,7 @@ import { log } from "./utils";
  * Configuration for the FAORenderer class
  **/
 export interface FOARendererOptions {
-    channelMap?: ChannelMap|number[];
+    channelMap?: ChannelMap | number[];
     hrirPathList?: string[];
     renderingMode?: RenderingMode;
 }
@@ -44,8 +44,7 @@ export interface FOARendererOptions {
 /**
  * Omnitone FOA renderer class. Uses the optimized convolution technique.
  */
-export class FOARenderer implements IDisposable {
-    private context: BaseAudioContext;
+export class FOARenderer implements IDisposable, ErsatzAudioNode {
     private config: FOARendererOptions;
     private bypass: GainNode;
     private router: FOARouter;
@@ -58,9 +57,7 @@ export class FOARenderer implements IDisposable {
     /**
      * Omnitone FOA renderer class. Uses the optimized convolution technique.
      */
-    constructor(context: BaseAudioContext, options: FOARendererOptions) {
-        this.context = context;
-
+    constructor(options: FOARendererOptions) {
         this.config = Object.assign({
             channelMap: ChannelMap.Default,
             renderingMode: RenderingMode.Ambisonic,
@@ -87,36 +84,42 @@ export class FOARenderer implements IDisposable {
      * Builds the internal audio graph.
      */
     private buildAudioGraph(): void {
-        this.input = this.context.createGain();
-        this.output = this.context.createGain();
-        this.bypass = this.context.createGain();
-        this.router = new FOARouter(this.context, this.config.channelMap);
-        this.rotator = new FOARotator(this.context);
-        this.convolver = new FOAConvolver(this.context);
-        this.input.connect(this.router.input);
-        this.input.connect(this.bypass);
-        this.router.output.connect(this.rotator.input);
-        this.rotator.output.connect(this.convolver.input);
-        this.convolver.output.connect(this.output);
+        this.router = new FOARouter(this.config.channelMap);
+        this.bypass = Gain("foa-renderer-bypass");
 
-        this.input.channelCount = 4;
-        this.input.channelCountMode = 'explicit';
-        this.input.channelInterpretation = 'discrete';
+        this.input = Gain("foa-renderer-input",
+            channelCount(4),
+            channelCountMode("explicit"),
+            channelInterpretation("discrete"),
+            this.router,
+            this.bypass);
+
+        this.output = Gain("foa-renderer-output");
+        this.rotator = new FOARotator();
+        this.convolver = new FOAConvolver();
+
+        connect(this.router, this.rotator);
+        connect(this.rotator, this.convolver);
+        connect(this.convolver, this.output);
     }
 
-    dispose(): void {
-        if (this.getRenderingMode() === RenderingMode.Bypass) {
-            this.bypass.connect(this.output);
-        }
 
-        this.input.disconnect(this.router.input);
-        this.input.disconnect(this.bypass);
-        this.router.output.disconnect(this.rotator.input);
-        this.rotator.output.disconnect(this.convolver.input);
-        this.convolver.output.disconnect(this.output);
-        this.convolver.dispose();
-        this.rotator.dispose();
-        this.router.dispose();
+    private disposed = false;
+    dispose(): void {
+        if (!this.disposed) {
+            if (this.getRenderingMode() === RenderingMode.Bypass) {
+                disconnect(this.bypass);
+            }
+
+            disconnect(this.input);
+            disconnect(this.router);
+            disconnect(this.rotator);
+            disconnect(this.convolver);
+            this.convolver.dispose();
+            this.rotator.dispose();
+            this.router.dispose();
+            this.disposed = true;
+        }
     }
 
     /**
@@ -124,8 +127,8 @@ export class FOARenderer implements IDisposable {
      */
     async initialize(): Promise<void> {
         const bufferList = this.config.hrirPathList
-            ? new BufferList(this.context, this.config.hrirPathList, { dataType: BufferDataType.URL })
-            : new BufferList(this.context, FOAHrirBase64, { dataType: BufferDataType.BASE64 });
+            ? new BufferList(this.config.hrirPathList, { dataType: BufferDataType.URL })
+            : new BufferList(FOAHrirBase64, { dataType: BufferDataType.BASE64 });
         try {
             const hrirBufferList = await bufferList.load();
             this.convolver.setHRIRBufferList(hrirBufferList);
@@ -142,7 +145,7 @@ export class FOARenderer implements IDisposable {
      * Set the channel map.
      * @param channelMap - Custom channel routing for FOA stream.
      */
-    setChannelMap(channelMap: ChannelMap|number[]): void {
+    setChannelMap(channelMap: ChannelMap | number[]): void {
         if (channelMap.toString() !== this.config.channelMap.toString()) {
             log(
                 'Remapping channels ([' + this.config.channelMap.toString() +
@@ -192,20 +195,18 @@ export class FOARenderer implements IDisposable {
             return;
         }
 
-        switch (mode) {
-            case RenderingMode.Ambisonic:
-                this.convolver.enable();
-                this.bypass.disconnect();
-                break;
-            case RenderingMode.Bypass:
-                this.convolver.disable();
-                this.bypass.connect(this.output);
-                break;
-            case RenderingMode.None:
-                this.convolver.disable();
-                this.bypass.disconnect();
-                break;
-            default: assertNever(mode);
+        if (mode === RenderingMode.Ambisonic) {
+            this.convolver.enable;
+        }
+        else {
+            this.convolver.disable();
+        }
+
+        if (mode === RenderingMode.Bypass) {
+            connect(this.bypass, this.output);
+        }
+        else {
+            disconnect(this.bypass, this.output);
         }
 
         this.config.renderingMode = mode;

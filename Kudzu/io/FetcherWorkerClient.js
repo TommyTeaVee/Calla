@@ -1,98 +1,119 @@
-import { renderImageBitmapFaces } from "../graphics2d/renderFace";
-import { hasImageBitmap, hasOffscreenCanvasRenderingContext2D } from "../html/canvas";
-import { splitProgress } from "../tasks/splitProgress";
+import { waitFor } from "../events/waitFor";
+import { hasImageBitmap } from "../html/canvas";
+import { createScript } from "../html/script";
 import { WorkerClient } from "../workers/WorkerClient";
-import { Fetcher } from "./Fetcher";
-export class FetcherWorkerClient extends Fetcher {
-    constructor(scriptPath, minScriptPath, workerPoolSize = 10) {
-        super();
-        this.worker = new WorkerClient(scriptPath, minScriptPath, workerPoolSize);
+import { fileToImage } from "./Fetcher";
+function isDOMParsersSupportedType(type) {
+    return type === "application/xhtml+xml"
+        || type === "application/xml"
+        || type === "image/svg+xml"
+        || type === "text/html"
+        || type === "text/xml";
+}
+function bufferToXml(buffer) {
+    if (!isDOMParsersSupportedType(buffer.contentType)) {
+        throw new Error(`Content-Type ${buffer.contentType} is not one supported by the DOM parser.`);
     }
-    async getBuffer(path, onProgress) {
-        if (this.worker.enabled) {
-            return await this.worker.execute("getBuffer", [path], onProgress);
+    const decoder = new TextDecoder();
+    const text = decoder.decode(buffer.buffer);
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(text, buffer.contentType);
+    return doc.documentElement;
+}
+export class BaseFetcherWorkerClient extends WorkerClient {
+    async getBuffer(path, headers, onProgress) {
+        return await this.callMethod("getBuffer", [path, headers], onProgress);
+    }
+    async getBlob(path, headers, onProgress) {
+        const buffer = await this.getBuffer(path, headers, onProgress);
+        const blob = new Blob([buffer.buffer], {
+            type: buffer.contentType
+        });
+        return blob;
+    }
+    async getText(path, headers, onProgress) {
+        return await this.callMethod("getText", [path, headers], onProgress);
+    }
+    async getXml(path, headers, onProgress) {
+        const buffer = await this.getBuffer(path, headers, onProgress);
+        return bufferToXml(buffer);
+    }
+    async getObject(path, headers, onProgress) {
+        return await this.callMethod("getObject", [path, headers], onProgress);
+    }
+    async getFile(path, headers, onProgress) {
+        return await this.callMethod("getFile", [path, headers], onProgress);
+    }
+    async getImageBitmap(path, headers, onProgress) {
+        return await this.callMethod("getImageBitmap", [path, headers], onProgress);
+    }
+    async getCanvasImage(path, headers, onProgress) {
+        if (hasImageBitmap) {
+            return await this.getImageBitmap(path, headers, onProgress);
         }
         else {
-            return await super.getBuffer(path, onProgress);
+            const file = await this.getFile(path, headers, onProgress);
+            return await fileToImage(file);
         }
     }
-    async postObjectForBuffer(path, obj, onProgress) {
-        if (this.worker.enabled) {
-            return await this.worker.execute("postObjectForBuffer", [path, obj], onProgress);
+    async postObject(path, obj, contentType, headers, onProgress) {
+        await this.callMethod("postObject", [path, obj, contentType, headers], onProgress);
+    }
+    async postObjectForBuffer(path, obj, contentType, headers, onProgress) {
+        return await this.callMethod("postObjectForBuffer", [path, obj, contentType, headers], onProgress);
+    }
+    async postObjectForBlob(path, obj, contentType, headers, onProgress) {
+        const buffer = await this.postObjectForBuffer(path, obj, contentType, headers, onProgress);
+        const blob = new Blob([buffer.buffer], {
+            type: buffer.contentType
+        });
+        return blob;
+    }
+    async postObjectForText(path, obj, contentType, headers, onProgress) {
+        return await this.callMethod("postObjectForText", [path, obj, contentType, headers], onProgress);
+    }
+    async postObjectForXml(path, obj, contentType, headers, onProgress) {
+        const buffer = await this.postObjectForBuffer(path, obj, contentType, headers, onProgress);
+        return bufferToXml(buffer);
+    }
+    async postObjectForObject(path, obj, contentType, headers, onProgress) {
+        return await this.callMethod("postObjectForObject", [path, obj, contentType, headers], onProgress);
+    }
+    async postObjectForFile(path, obj, contentType, headers, onProgress) {
+        return await this.callMethod("postObjectForFile", [path, obj, contentType, headers], onProgress);
+    }
+    async postObjectForImageBitmap(path, obj, contentType, headers, onProgress) {
+        return await this.callMethod("postObjectForImageBitmap", [path, obj, contentType, headers], onProgress);
+    }
+    async postObjectForCanvasImage(path, obj, contentType, headers, onProgress) {
+        if (hasImageBitmap) {
+            return await this.postObjectForImageBitmap(path, obj, contentType, headers, onProgress);
         }
         else {
-            return await super.postObjectForBuffer(path, obj, onProgress);
+            const file = await this.postObjectForFile(path, obj, contentType, headers, onProgress);
+            return await fileToImage(file);
         }
     }
-    async getObject(path, onProgress) {
-        if (this.worker.enabled) {
-            return await this.worker.execute("getObject", [path], onProgress);
+    async loadScript(path, test, onProgress) {
+        if (!test()) {
+            const scriptLoadTask = waitFor(test);
+            const file = await this.getFile(path, null, onProgress);
+            createScript(file);
+            await scriptLoadTask;
         }
-        else {
-            return await super.getObject(path, onProgress);
-        }
-    }
-    async postObjectForObject(path, obj, onProgress) {
-        if (this.worker.enabled) {
-            return await this.worker.execute("postObjectForObject", [path, obj], onProgress);
-        }
-        else {
-            return await super.postObjectForObject(path, obj, onProgress);
+        else if (onProgress) {
+            onProgress(1, 1, "skip");
         }
     }
-    async getFile(path, onProgress) {
-        if (this.worker.enabled) {
-            return await this.worker.execute("getFile", [path], onProgress);
+    async getWASM(path, imports, onProgress) {
+        const wasmBuffer = await this.getBuffer(path, null, onProgress);
+        if (wasmBuffer.contentType !== "application/wasm") {
+            throw new Error("Server did not respond with WASM file. Was: " + wasmBuffer.contentType);
         }
-        else {
-            return await super.getFile(path, onProgress);
-        }
+        const wasmModule = await WebAssembly.instantiate(wasmBuffer.buffer, imports);
+        return wasmModule.instance.exports;
     }
-    async postObjectForFile(path, obj, onProgress) {
-        if (this.worker.enabled) {
-            return await this.worker.execute("postObjectForFile", [path, obj], onProgress);
-        }
-        else {
-            return await super.postObjectForFile(path, obj, onProgress);
-        }
-    }
-    async getImageBitmap(path, onProgress) {
-        if (this.worker.enabled) {
-            return await this.worker.execute("getImageBitmap", [path], onProgress);
-        }
-        else {
-            return await super.getImageBitmap(path, onProgress);
-        }
-    }
-    async postObjectForImageBitmap(path, obj, onProgress) {
-        if (this.worker.enabled && hasImageBitmap) {
-            return await this.worker.execute("postObjectForImageBitmap", [path, obj], onProgress);
-        }
-        else {
-            return await super.postObjectForImageBitmap(path, obj, onProgress);
-        }
-    }
-    async getCubes(path, onProgress) {
-        if (this.worker.enabled
-            && hasImageBitmap
-            && hasOffscreenCanvasRenderingContext2D) {
-            return await this.worker.execute("getCubes", [path], onProgress);
-        }
-        else {
-            return await super.getCubes(path, onProgress);
-        }
-    }
-    async getEquiMaps(path, interpolation, maxWidth, onProgress) {
-        if (this.worker.enabled
-            && hasImageBitmap
-            && hasOffscreenCanvasRenderingContext2D) {
-            const splits = splitProgress(onProgress, [1, 6]);
-            const imgData = await this.getImageData(path, splits.shift());
-            return await renderImageBitmapFaces((readData, faceName, interpolation, maxWidth, onProgress) => this.worker.execute("renderFace", [readData, faceName, interpolation, maxWidth], onProgress), imgData, interpolation, maxWidth, splits.shift());
-        }
-        else {
-            return await super.getEquiMaps(path, interpolation, maxWidth, onProgress);
-        }
-    }
+}
+export class FetcherWorkerClient extends BaseFetcherWorkerClient {
 }
 //# sourceMappingURL=FetcherWorkerClient.js.map

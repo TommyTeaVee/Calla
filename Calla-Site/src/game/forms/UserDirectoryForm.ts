@@ -1,7 +1,8 @@
-import { backgroundColor, height, id, styles, width, zIndex } from "kudzu/html/attrs";
+import { htmlHeight, htmlWidth, id } from "kudzu/html/attrs";
+import { backgroundColor, styles, zIndex } from "kudzu/html/css";
 import { onClick, onMouseOut, onMouseOver } from "kudzu/html/evts";
 import { gridPos, row } from "kudzu/html/grid";
-import { Canvas, Div } from "kudzu/html/tags";
+import { Button, Canvas, Div, InputText } from "kudzu/html/tags";
 import type { User } from "../User";
 import { FormDialog, FormDialogEvents } from "./FormDialog";
 import { hide, isOpen } from "./ops";
@@ -36,9 +37,13 @@ export class UserDirectoryForm extends FormDialog<UserDirectoryFormEvents> {
     lastUser: User = null;
 
     constructor() {
-        super("users");
+        super("users", "Users");
 
-        this.usersList = Div(id("chatUsers"));
+        this.content.append(
+            this.usersList = Div(id("chatUsers")),
+            Div(id("chatMessages")),
+            InputText(id("chatEntry")),
+            Button(id("chatSend"), "Send"));
 
         Object.seal(this);
     }
@@ -79,8 +84,8 @@ export class UserDirectoryForm extends FormDialog<UserDirectoryFormEvents> {
             this.avatarGs.set(
                 user.id,
                 Canvas(
-                    width(32),
-                    height(32))
+                    htmlWidth(32),
+                    htmlHeight(32))
                     .getContext("2d"));
         }
 
@@ -88,7 +93,7 @@ export class UserDirectoryForm extends FormDialog<UserDirectoryFormEvents> {
 
         const trueRow = Div(
             styles(gridPos(1, row, 2, 1), zIndex(1), unhoveredColor),
-            onMouseOver((_:Event) => {
+            onMouseOver((_: Event) => {
                 hoveredColor.apply(trueRow.style);
             }),
             onMouseOut(() => unhoveredColor.apply(trueRow.style)),
@@ -119,7 +124,7 @@ export class UserDirectoryForm extends FormDialog<UserDirectoryFormEvents> {
             for (let elems of this.rows.values()) {
                 const r = row(rowCount++);
                 for (let elem of elems) {
-                    r.apply(elem);
+                    r.apply(elem.style);
                 }
             }
         }

@@ -1,9 +1,12 @@
-import { IAppliable } from "./attrs";
+import { progressCallback } from "../tasks/progressCallback";
+import { IElementAppliable } from "./tags";
 declare type EventListenerOpts = boolean | AddEventListenerOptions;
+export declare function makeEnterKeyEventHandler(callback: (evt: KeyboardEvent) => void): (ev: Event) => void;
+export declare function makeProgress(element: HTMLInputElement): progressCallback;
 /**
  * A setter functor for HTML element events.
  **/
-export declare class HtmlEvt implements IAppliable {
+export declare class HtmlEvt implements IElementAppliable {
     name: string;
     callback: EventListenerOrEventListenerObject;
     opts?: EventListenerOpts;
@@ -14,7 +17,7 @@ export declare class HtmlEvt implements IAppliable {
      * @param opts - additional attach options.
      */
     constructor(name: string, callback: EventListenerOrEventListenerObject, opts?: EventListenerOpts);
-    apply(elem: HTMLElement | CSSStyleDeclaration): void;
+    applyToElement(elem: HTMLElement): void;
     /**
      * Add the encapsulate callback as an event listener to the give HTMLElement
      */
@@ -86,9 +89,10 @@ export declare function onHashChange(callback: (evt: Event) => void, opts?: Even
 export declare function onLostPointerCapture(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt;
 export declare function onInput(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt;
 export declare function onInvalid(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt;
-export declare function onKeyDown(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt;
-export declare function onKeyPress(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt;
-export declare function onKeyUp(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt;
+export declare function onKeyDown(callback: (evt: KeyboardEvent) => void, opts?: EventListenerOpts): HtmlEvt;
+export declare function onKeyPress(callback: (evt: KeyboardEvent) => void, opts?: EventListenerOpts): HtmlEvt;
+export declare function onKeyUp(callback: (evt: KeyboardEvent) => void, opts?: EventListenerOpts): HtmlEvt;
+export declare function onEnterKeyPressed(callback: (evt: KeyboardEvent) => void, opts?: EventListenerOpts): HtmlEvt;
 export declare function onLanguageChange(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt;
 export declare function onLevelChange(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt;
 export declare function onLoad(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt;

@@ -1,14 +1,12 @@
 import { TypedEvent } from "kudzu/events/EventBase";
-import { id } from "kudzu/html/attrs";
-import { Button, Div, InputEmail, InputText } from "kudzu/html/tags";
+import { autoComplete, htmlFor, id, list, placeHolder, required, title, value } from "kudzu/html/attrs";
+import { onBlur, onClick, onInput, onKeyPress, onMouseDown } from "kudzu/html/evts";
+import { Button, DataList, Form, InputEmail, InputText, Label, Option } from "kudzu/html/tags";
 import { FormDialog, FormDialogEvents } from "./FormDialog";
-import { setLocked, setOpen } from "./ops";
-import type { SelectBoxTag } from "./SelectBoxTag";
-import { SelectBox } from "./SelectBoxTag";
 
 interface RoomEntry {
-    ShortName: string;
-    Name?: string;
+    value: string;
+    text: string;
 }
 
 interface LoginFormEvents extends FormDialogEvents {
@@ -17,144 +15,146 @@ interface LoginFormEvents extends FormDialogEvents {
 
 const loginEvt = new TypedEvent("login");
 
+function isEnter(evt: KeyboardEvent) {
+    return !evt.shiftKey
+        && !evt.ctrlKey
+        && !evt.altKey
+        && !evt.metaKey
+        && evt.key === "Enter";
+}
+
 export class LoginForm extends FormDialog<LoginFormEvents> {
 
     private _ready = false;
     private _connecting = false;
     private _connected = false;
 
-    private roomSelectControl: HTMLDivElement;
-    private roomEntryControl: HTMLDivElement;
-    private roomSelect: SelectBoxTag<RoomEntry>;
-    private roomInput: HTMLInputElement;
+    private roomNameInput: HTMLInputElement;
     private userNameInput: HTMLInputElement;
     private emailInput: HTMLInputElement;
     private connectButton: HTMLButtonElement;
 
-    constructor() {
-        super("login");
+    constructor(rooms: RoomEntry[]) {
+        super("login", "Login", false);
+
+        this.element.classList.add("dialog-1");
 
         this.addEventListener("shown", () => this._ready = true);
 
-        this.roomSelectControl = Div(id("roomSelectorControl"));
-        this.roomEntryControl = Div(id("roomEntryControl"));
+        const validator = () => this.validate();
 
-
-        const curRooms = new Array<RoomEntry>();
-        const curOpts = this.element.querySelectorAll("#roomSelector option");
-        for (let i = 0; i < curOpts.length; ++i) {
-            const opt = curOpts[i] as HTMLOptionElement;
-            curRooms.push({
-                ShortName: opt.value,
-                Name: opt.textContent || opt.innerText
-            });
-        }
-
-        this.roomSelect = SelectBox(
-            "roomSelector",
-            "No rooms available",
-            v => v.ShortName,
-            v => v.Name);
-        this.roomSelect.addEventListener("input", () => this.validate());
-        this.roomSelect.emptySelectionEnabled = false;
-        this.roomSelect.values = curRooms;
-        this.roomSelect.selectedIndex = 0;
-
-        this.roomInput = InputText(id("roomName"));
-        this.roomInput.addEventListener("input", () => this.validate());
-        this.roomInput.addEventListener("keypress", (evt) => {
-            if (evt.key === "Enter") {
-                if (this.userName.length === 0) {
-                    this.userNameInput.focus();
-                }
-                else if (this.email.length === 0) {
-                    this.emailInput.focus();
-                }
-            }
-        });
-
-        this.userNameInput = InputText(id("userName"));
-        this.userNameInput.addEventListener("input", () => this.validate());
-        this.userNameInput.addEventListener("keypress", (evt) => {
-            if (evt.key === "Enter") {
-                if (this.userName.length === 0) {
-                    this.userNameInput.focus();
-                }
-                else if (this.roomName.length === 0) {
-                    if (this.roomSelectMode) {
-                        this.roomSelect.focus();
-                    }
-                    else {
-                        this.roomInput.focus();
-                    }
-                }
-            }
-        });
-
-        this.emailInput = InputEmail(id("email"));
-        this.emailInput.addEventListener("keypress", (evt) => {
-            if (evt.key === "Enter") {
-                if (this.userName.length === 0) {
-                    this.userNameInput.focus();
-                }
-                else if (this.roomName.length === 0) {
-                    if (this.roomSelectMode) {
-                        this.roomSelect.focus();
-                    }
-                    else {
-                        this.roomInput.focus();
-                    }
-                }
-            }
-        });
-
-        const createRoomButton = Button(id("createNewRoom"));
-        createRoomButton.addEventListener("click", () => {
-            this.roomSelectMode = false;
-        });
-
-        const selectRoomButton = Button(id("selectRoom"));
-        selectRoomButton.addEventListener("click", () => {
-            this.roomSelectMode = true;
-        });
-
-        this.connectButton = Button(id("connect"));
-
-
-        const checkInput = (evt: KeyboardEvent) => {
-            if (!evt.shiftKey
-                && !evt.ctrlKey
-                && !evt.altKey
-                && !evt.metaKey
-                && evt.key === "Enter"
-                && this.userName.length > 0
+        const onLoginAttempt = () => {
+            if (this.userName.length > 0
                 && this.roomName.length > 0) {
+                this.connecting = true;
                 this.dispatchEvent(loginEvt);
             }
         };
-        this.connectButton.addEventListener("click", () => this.dispatchEvent(loginEvt));
-        this.roomInput.addEventListener("keypress", checkInput);
-        this.userNameInput.addEventListener("keypress", checkInput);
 
-        this.addEventListener("login", () => {
-            this.connecting = true;
-        });
+        let lastRoomName: string = null;
 
-        this.roomSelectMode = true;
+        this.content.append(
+            DataList(
+                id("roomsList"),
+                ...rooms.map(room =>
+                    Option(
+                        value(room.value),
+                        room.text))),
+            Form(
+                id("loginForm"),
+                autoComplete(true),
+                Label(
+                    htmlFor("userName"),
+                    "User:"),
+                this.userNameInput = InputText(
+                    id("userName"),
+                    placeHolder("User name"),
+                    required(true),
+                    onInput(validator),
+                    onKeyPress((evt) => {
+                        if (isEnter(evt)) {
+                            if (this.userName.length === 0) {
+                                this.userNameInput.focus();
+                            }
+                            else if (this.roomName.length === 0) {
+                                this.roomNameInput.focus();
+                            }
+                            else {
+                                onLoginAttempt();
+                            }
+                        }
+                    })),
+
+                Label(
+                    htmlFor("email"),
+                    "Email:"),
+                this.emailInput = InputEmail(
+                    id("email"),
+                    placeHolder("Email address (Optional)"),
+                    title("Email addresses are used to send updates about Calla."),
+                    onInput(validator),
+                    onKeyPress((evt) => {
+                        if (isEnter(evt)) {
+                            if (this.userName.length === 0) {
+                                this.userNameInput.focus();
+                            }
+                            else if (this.roomName.length === 0) {
+                                this.roomNameInput.focus();
+                            }
+                            else {
+                                onLoginAttempt();
+                            }
+                        }
+                    })),
+
+                Label(
+                    htmlFor("roomName"),
+                    "Room:"),
+                this.roomNameInput = InputText(
+                    id("roomName"),
+                    list("roomsList"),
+                    placeHolder("Room name"),
+                    value("Calla"),
+                    required(true),
+                    onMouseDown(() => {
+                        lastRoomName = this.roomName;
+                        this.roomName = "";
+                    }, { capture: true }),
+                    onBlur(() => {
+                        if (this.roomName.length === 0) {
+                            this.roomName = lastRoomName;
+                        }
+                    }),
+                    onInput(validator),
+                    onKeyPress((evt) => {
+                        if (isEnter(evt)) {
+                            if (this.userName.length === 0) {
+                                this.userNameInput.focus();
+                            }
+                            else if (this.email.length === 0) {
+                                this.emailInput.focus();
+                            }
+                            else {
+                                onLoginAttempt();
+                            }
+                        }
+                    })),
+
+                this.connectButton = Button(
+                    id("connect"),
+                    onClick(onLoginAttempt))));
 
         this.validate();
     }
 
     private validate() {
-        const canConnect = this.roomName.length > 0
-            && this.userName.length > 0;
 
-        setLocked(
-            this.connectButton,
-            !this.ready
+        this.connectButton.disabled = !this.ready
+            || this.roomName.length === 0
+            || this.userName.length === 0
             || this.connecting
-            || this.connected
-            || !canConnect);
+            || this.connected;
+
         this.connectButton.innerHTML =
             this.connected
                 ? "Connected"
@@ -165,42 +165,12 @@ export class LoginForm extends FormDialog<LoginFormEvents> {
                         : "Loading...";
     }
 
-    get roomSelectMode() {
-        return this.roomSelectControl.style.display !== "none";
-    }
-
-    set roomSelectMode(value) {
-        setOpen(this.roomSelectControl, value);
-        setOpen(this.roomEntryControl, !value);
-
-        if (value) {
-            this.roomSelect.selectedValue = { ShortName: this.roomInput.value };
-        }
-        else if (this.roomSelect.selectedIndex >= 0) {
-            this.roomInput.value = this.roomSelect.selectedValue.ShortName;
-        }
-
-        this.validate();
-    }
-
     get roomName() {
-        const room = this.roomSelectMode
-            ? this.roomSelect.selectedValue && this.roomSelect.selectedValue.ShortName
-            : this.roomInput.value;
-
-        return room || "";
+        return this.roomNameInput.value;
     }
 
     set roomName(v) {
-        if (v === null
-            || v === undefined
-            || v.length === 0) {
-            v = this.roomSelect.values[0].ShortName;
-        }
-
-        this.roomInput.value = v;
-        this.roomSelect.selectedValue = { ShortName: v };
-        this.roomSelectMode = this.roomSelect.selectedIndex > -1;
+        this.roomNameInput.value = v;
         this.validate();
     }
 

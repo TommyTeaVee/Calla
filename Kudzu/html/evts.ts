@@ -1,12 +1,34 @@
+import { progressCallback } from "../tasks/progressCallback";
 import { isFunction, isHTMLElement } from "../typeChecks";
-import { IAppliable } from "./attrs";
+import { IElementAppliable } from "./tags";
 
 type EventListenerOpts = boolean | AddEventListenerOptions;
+
+export function makeEnterKeyEventHandler(callback: (evt: KeyboardEvent) => void) {
+    return (ev: Event) => {
+        const evt = ev as KeyboardEvent;
+        if (!evt.shiftKey
+            && !evt.ctrlKey
+            && !evt.altKey
+            && !evt.metaKey
+            && evt.key === "Enter") {
+            callback(evt);
+        }
+    };
+}
+
+export function makeProgress(element: HTMLInputElement): progressCallback {
+    return (soFar: number, total: number) => {
+        element.max = total.toFixed(0);
+        element.value = soFar.toFixed(0);
+    }
+}
 
 /**
  * A setter functor for HTML element events.
  **/
-export class HtmlEvt implements IAppliable {
+export class HtmlEvt
+implements IElementAppliable {
     opts?: EventListenerOpts;
 
     /**
@@ -24,7 +46,7 @@ export class HtmlEvt implements IAppliable {
         Object.freeze(this);
     }
 
-    apply(elem: HTMLElement | CSSStyleDeclaration) {
+    applyToElement(elem: HTMLElement) {
         if (isHTMLElement(elem)) {
             this.add(elem);
         }
@@ -108,9 +130,16 @@ export function onHashChange(callback: (evt: Event) => void, opts?: EventListene
 export function onLostPointerCapture(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt { return new HtmlEvt("lostpointercapture", callback, opts); }
 export function onInput(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt { return new HtmlEvt("input", callback, opts); }
 export function onInvalid(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt { return new HtmlEvt("invalid", callback, opts); }
-export function onKeyDown(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt { return new HtmlEvt("keydown", callback, opts); }
-export function onKeyPress(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt { return new HtmlEvt("keypress", callback, opts); }
-export function onKeyUp(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt { return new HtmlEvt("keyup", callback, opts); }
+export function onKeyDown(callback: (evt: KeyboardEvent) => void, opts?: EventListenerOpts): HtmlEvt { return new HtmlEvt("keydown", (evt: Event) => callback(evt as KeyboardEvent), opts); }
+export function onKeyPress(callback: (evt: KeyboardEvent) => void, opts?: EventListenerOpts): HtmlEvt { return new HtmlEvt("keypress", (evt: Event) => callback(evt as KeyboardEvent), opts); }
+export function onKeyUp(callback: (evt: KeyboardEvent) => void, opts?: EventListenerOpts): HtmlEvt { return new HtmlEvt("keyup", (evt: Event) => callback(evt as KeyboardEvent), opts); }
+export function onEnterKeyPressed(callback: (evt: KeyboardEvent) => void, opts?: EventListenerOpts): HtmlEvt {
+    return onKeyUp((evt) => {
+        if (evt.key === "Enter") {
+            callback(evt);
+        }
+    }, opts);
+}
 export function onLanguageChange(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt { return new HtmlEvt("languagechange", callback, opts); }
 export function onLevelChange(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt { return new HtmlEvt("levelchange", callback, opts); }
 export function onLoad(callback: (evt: Event) => void, opts?: EventListenerOpts): HtmlEvt { return new HtmlEvt("load", callback, opts); }

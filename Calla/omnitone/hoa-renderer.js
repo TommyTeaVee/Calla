@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { assertNever } from "kudzu/typeChecks";
+import { channelCount, channelCountMode, channelInterpretation, connect, disconnect, Gain } from "kudzu/audio";
 import { BufferDataType, BufferList } from './buffer-list';
 import { HOAConvolver } from './hoa-convolver';
 import { HOARotator } from './hoa-rotator';
@@ -27,11 +27,16 @@ const SupportedAmbisonicOrder = [2, 3];
  * Omnitone HOA renderer class. Uses the optimized convolution technique.
  */
 export class HOARenderer {
+    config;
+    input;
+    output;
+    bypass;
+    rotator;
+    convolver;
     /**
      * Omnitone HOA renderer class. Uses the optimized convolution technique.
      */
-    constructor(context, options) {
-        this.context = context;
+    constructor(options) {
         this.config = Object.assign({
             ambisonicOrder: 3,
             renderingMode: RenderingMode.Ambisonic,
@@ -56,30 +61,27 @@ export class HOARenderer {
      * Builds the internal audio graph.
      */
     _buildAudioGraph() {
-        this.input = this.context.createGain();
-        this.output = this.context.createGain();
-        this.bypass = this.context.createGain();
-        this.rotator = new HOARotator(this.context, this.config.ambisonicOrder);
-        this.convolver =
-            new HOAConvolver(this.context, this.config.ambisonicOrder);
-        this.input.connect(this.rotator.input);
-        this.input.connect(this.bypass);
-        this.rotator.output.connect(this.convolver.input);
-        this.convolver.output.connect(this.output);
-        this.input.channelCount = this.config.numberOfChannels;
-        this.input.channelCountMode = 'explicit';
-        this.input.channelInterpretation = 'discrete';
+        this.output = Gain("hoa-renderer-output");
+        this.rotator = new HOARotator(this.config.ambisonicOrder);
+        this.bypass = Gain("hoa-renderer-bypass");
+        this.input = Gain("hoa-renderer-input", channelCount(this.config.numberOfChannels), channelCountMode("explicit"), channelInterpretation("discrete"), this.rotator, this.bypass);
+        this.convolver = new HOAConvolver(this.config.ambisonicOrder);
+        connect(this.rotator, this.convolver);
+        connect(this.convolver, this);
     }
+    disposed = false;
     dispose() {
-        if (this.getRenderingMode() === RenderingMode.Bypass) {
-            this.bypass.connect(this.output);
+        if (!this.disposed) {
+            if (this.getRenderingMode() === RenderingMode.Bypass) {
+                disconnect(this.bypass);
+            }
+            disconnect(this.input);
+            disconnect(this.rotator);
+            disconnect(this.convolver);
+            this.rotator.dispose();
+            this.convolver.dispose();
+            this.disposed = true;
         }
-        this.input.disconnect(this.rotator.input);
-        this.input.disconnect(this.bypass);
-        this.rotator.output.disconnect(this.convolver.input);
-        this.convolver.output.disconnect(this.output);
-        this.rotator.dispose();
-        this.convolver.dispose();
     }
     /**
      * Initializes and loads the resource for the renderer.
@@ -88,12 +90,12 @@ export class HOARenderer {
         let bufferList;
         if (this.config.hrirPathList) {
             bufferList =
-                new BufferList(this.context, this.config.hrirPathList, { dataType: BufferDataType.URL });
+                new BufferList(this.config.hrirPathList, { dataType: BufferDataType.URL });
         }
         else {
             bufferList = this.config.ambisonicOrder === 2
-                ? new BufferList(this.context, SOAHrirBase64)
-                : new BufferList(this.context, TOAHrirBase64);
+                ? new BufferList(SOAHrirBase64)
+                : new BufferList(TOAHrirBase64);
         }
         try {
             const hrirBufferList = await bufferList.load();
@@ -134,20 +136,17 @@ export class HOARenderer {
         if (mode === this.config.renderingMode) {
             return;
         }
-        switch (mode) {
-            case RenderingMode.Ambisonic:
-                this.convolver.enable();
-                this.bypass.disconnect();
-                break;
-            case RenderingMode.Bypass:
-                this.convolver.disable();
-                this.bypass.connect(this.output);
-                break;
-            case RenderingMode.None:
-                this.convolver.disable();
-                this.bypass.disconnect();
-                break;
-            default: assertNever(mode);
+        if (mode === RenderingMode.Ambisonic) {
+            this.convolver.enable;
+        }
+        else {
+            this.convolver.disable();
+        }
+        if (mode === RenderingMode.Bypass) {
+            connect(this.bypass, this.output);
+        }
+        else {
+            disconnect(this.bypass, this.output);
         }
         this.config.renderingMode = mode;
     }

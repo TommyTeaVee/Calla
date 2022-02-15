@@ -22,7 +22,7 @@ export class TileMap {
     private _graph: astar.Graph = null;
 
     constructor(tilemapName: string, private fetcher: IFetcher) {
-        this._url = new URL(`data/tilemaps/${tilemapName}.tmx`, document.baseURI);
+        this._url = new URL(`/data/tilemaps/${tilemapName}.tmx`, document.baseURI);
     }
 
     async load() {
@@ -33,7 +33,7 @@ export class TileMap {
             tileHeight = parseInt(map.getAttribute("tileheight"), 10),
             tileset = map.querySelector("tileset"),
             tilesetSource = tileset.getAttribute("source"),
-            layers = map.querySelectorAll("layer > data");
+            layers = Array.from<HTMLElement>(map.querySelectorAll("layer > data"));
 
         this._layers = layers.length;
         this._width = width;

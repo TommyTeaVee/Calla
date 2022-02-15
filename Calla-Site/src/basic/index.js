@@ -2,15 +2,14 @@
 // the output audio device. This flag indicates whether or not
 // we are in a browser that supports such a feature, without
 // hardcoding the project to a specific browser.
-import { canChangeAudioOutput } from "calla/audio/canChangeAudioOutput";
-// Strictly speaking, this is the only class that needs to be
-// imported, if you are consuming Calla through a vanilla
-// JavaScript project.
-import { Calla } from "calla/Calla";
+import { canChangeAudioOutput } from "calla/devices/DeviceManager";
+// Strictly speaking, these are the only classes that needs to be
+// imported, if you are consuming Calla through a vanilla JavaScript project.
+import { JitsiOnlyClientLoader } from "calla/client-loader/JitsiOnlyClientLoader";
 // Calla provides a convient means of pumping animation events.
 import { RequestAnimationFrameTimer } from "kudzu/timers/RequestAnimationFrameTimer";
 // Import the configuration parameters.
-import { JITSI_HOST, JVB_HOST, JVB_MUC } from "../constants";
+import { JITSI_HOST, JVB_HOST, JVB_MUC } from "../configuration";
 // Gets all the named elements in the document so we can
 // setup event handlers on them.
 const controls = {
@@ -24,10 +23,17 @@ const controls = {
     speakers: document.getElementById("speakers")
 };
 /**
- * The Calla interface, through which teleconferencing sessions and
- * user audio positioning is managed.
+ * The Calla loader makes sure all the necessary parts for Calla (specifically,
+ * lib-jitsi-meet, and its transient dependency jQuery) get loaded before
+ * the Calla client is created.
  **/
-const client = new Calla();
+const loader = new JitsiOnlyClientLoader(JITSI_HOST, JVB_HOST, JVB_MUC);
+/**
+ * The Calla interface, through which teleconferencing sessions and
+ * user audio positioning is managed. We'll get an instance of it
+ * after calling loader.load()
+ **/
+let client = null;
 /**
  * A place to stow references to our users.
  **/
@@ -60,7 +66,7 @@ async function connect() {
     controls.userName.disabled = true;
     controls.connect.disabled = true;
     // and start the connection.
-    await client.join(roomName);
+    await client.join(roomName, true);
     await client.identify(userName);
 }
 /**
@@ -96,7 +102,7 @@ function addUser(id, displayName, pose, isLocal) {
         const local = users.get(client.localUserID);
         if (local) {
             const { p, f, u } = local.pose.end;
-            client.setLocalPoseImmediate(p[0], p[1], p[2], f[0], f[1], f[2], u[0], u[1], u[2]);
+            client.setLocalPose(p[0], p[1], p[2], f[0], f[1], f[2], u[0], u[1], u[2]);
         }
     }
 }
@@ -153,7 +159,7 @@ function setPosition(x, y) {
  * be moved.
  **/
 function update() {
-    client.update();
+    client.audio.update();
     for (let user of users.values()) {
         user.update();
     }
@@ -175,20 +181,24 @@ async function leave() {
  * in some way. This User class helps encapsulate that representation.
  **/
 class User {
+    id;
+    pose;
+    // The user's name.
+    _name = null;
+    // An HTML element to display the user's name.
+    _nameEl = null;
+    // Calla will eventually give us a video stream for the user.
+    _videoStream = null;
+    // An HTML element for displaying the user's video.
+    _video = null;
+    // An HTML element for showing the user name and video together.
+    container;
     /**
      * Creates a new User object.
      */
     constructor(id, name, pose, isLocal) {
         this.id = id;
         this.pose = pose;
-        // The user's name.
-        this._name = null;
-        // An HTML element to display the user's name.
-        this._nameEl = null;
-        // Calla will eventually give us a video stream for the user.
-        this._videoStream = null;
-        // An HTML element for displaying the user's video.
-        this._video = null;
         this.container = document.createElement("div");
         this.container.className = "user";
         if (isLocal) {
@@ -275,22 +285,22 @@ controls.space.addEventListener("click", (evt) => {
     const y = evt.clientY - controls.space.offsetTop;
     setPosition(x, y);
 });
-client.addEventListener("conferenceJoined", (evt) => startGame(evt.id, evt.pose));
+client.addEventListener("conferenceJoined", (evt) => startGame(evt.userID, evt.pose));
 /**
  * If the user has left the conference (or been kicked
  * by a moderator), we need to shut down the rendering.
  **/
 client.addEventListener("conferenceLeft", (evt) => {
-    removeUser(evt.id);
+    removeUser(evt.userID);
     timer.stop();
     controls.leave.disabled = true;
     controls.connect.disabled = false;
 });
-client.addEventListener("participantJoined", (evt) => addUser(evt.id, evt.displayName, evt.source.pose, false));
-client.addEventListener("participantLeft", (evt) => removeUser(evt.id));
-client.addEventListener("videoAdded", (evt) => changeVideo(evt.id, evt.stream));
-client.addEventListener("videoRemoved", (evt) => changeVideo(evt.id, null));
-client.addEventListener("userNameChanged", (evt) => changeName(evt.id, evt.displayName));
+client.addEventListener("participantJoined", (evt) => addUser(evt.userID, evt.displayName, evt.source.pose, false));
+client.addEventListener("participantLeft", (evt) => removeUser(evt.userID));
+client.addEventListener("videoAdded", (evt) => changeVideo(evt.userID, evt.stream));
+client.addEventListener("videoRemoved", (evt) => changeVideo(evt.userID, null));
+client.addEventListener("userNameChanged", (evt) => changeName(evt.userID, evt.displayName));
 timer.addEventListener("tick", update);
 /**
  * Binds a device list to a select box.
@@ -341,10 +351,11 @@ function deviceSelector(addNone, select, values, preferredDeviceID, onSelect) {
     // audio outputs at this time, so disable the control if we
     // detect there is no option to change outputs.
     controls.speakers.disabled = !canChangeAudioOutput;
-    deviceSelector(true, controls.cams, await client.getVideoInputDevices(true), client.preferredVideoInputID, (device) => client.setVideoInputDevice(device));
-    deviceSelector(true, controls.mics, await client.getAudioInputDevices(true), client.preferredAudioInputID, (device) => client.setAudioInputDevice(device));
-    deviceSelector(false, controls.speakers, await client.getAudioOutputDevices(true), client.preferredAudioOutputID, (device) => client.setAudioOutputDevice(device));
-    await client.prepare(JITSI_HOST, JVB_HOST, JVB_MUC);
+    client = await loader.load();
+    await client.devices.getMediaPermissions();
+    deviceSelector(true, controls.cams, await client.devices.getVideoInputDevices(true), client.devices.preferredVideoInputID, (device) => client.devices.setVideoInputDevice(device));
+    deviceSelector(true, controls.mics, await client.devices.getAudioInputDevices(true), client.devices.preferredAudioInputID, (device) => client.devices.setAudioInputDevice(device));
+    deviceSelector(false, controls.speakers, await client.devices.getAudioOutputDevices(true), client.devices.preferredAudioOutputID, (device) => client.setAudioOutputDevice(device));
     await client.connect();
     // At this point, everything is ready, so we can let 
     // the user attempt to connect to the conference now.
@@ -355,9 +366,10 @@ function deviceSelector(addNone, select, values, preferredDeviceID, onSelect) {
 // locally and testing multiple connections. It can
 // safely be ignored.
 // ===================================================
-import { userNumber } from "kudzu/testing/userNumber";
+import { getUserNumber } from "kudzu/testing/userNumber";
 import { openSideTest } from "kudzu/testing/windowing";
 const sideTest = document.getElementById("sideTest");
+const userNumber = getUserNumber();
 if (userNumber === 1) {
     sideTest.addEventListener("click", openSideTest);
 }

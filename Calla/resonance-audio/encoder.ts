@@ -20,6 +20,7 @@
  */
 
 
+import { ChannelMerger, connect, disconnect, Gain } from "kudzu/audio";
 import type { IDisposable } from "kudzu/using";
 import {
     MAX_RE_WEIGHTS,
@@ -64,7 +65,6 @@ export interface EncoderOptions {
  * Spatially encodes input using weighted spherical harmonics.
  */
 export class Encoder implements IDisposable {
-    private context: AudioContext;
     private channelGain = new Array<GainNode>();
     private merger: ChannelMergerNode = null;
     private ambisonicOrder: number;
@@ -102,7 +102,7 @@ export class Encoder implements IDisposable {
     /**
      * Spatially encodes input using weighted spherical harmonics.
      */
-    constructor(context: AudioContext, options?: EncoderOptions) {
+    constructor(options?: EncoderOptions) {
         // Use defaults for undefined arguments.
         options = Object.assign({
             ambisonicOrder: DEFAULT_AMBISONIC_ORDER,
@@ -111,11 +111,9 @@ export class Encoder implements IDisposable {
             sourceWidth: DEFAULT_SOURCE_WIDTH
         }, options);
 
-        this.context = context;
-
         // Create I/O nodes.
-        this.input = context.createGain();
-        this.output = context.createGain();
+        this.input = Gain("encoder-input");
+        this.output = Gain("encoder-output");
 
         // Set initial order, angle and source width.
         this.setAmbisonicOrder(options.ambisonicOrder);
@@ -131,32 +129,35 @@ export class Encoder implements IDisposable {
     setAmbisonicOrder(ambisonicOrder: number): void {
         this.ambisonicOrder = Encoder.validateAmbisonicOrder(ambisonicOrder);
 
-        this.input.disconnect();
-        for (let i = 0; i < this.channelGain.length; i++) {
-            this.channelGain[i].disconnect();
-        }
-        if (this.merger != null) {
-            this.merger.disconnect();
-        }
+        this.dispose();
         
         // Create audio graph.
         let numChannels = (this.ambisonicOrder + 1) * (this.ambisonicOrder + 1);
-        this.merger = this.context.createChannelMerger(numChannels);
+        this.merger = ChannelMerger("encoder-merger", numChannels);
         this.channelGain = new Array(numChannels);
         for (let i = 0; i < numChannels; i++) {
-            this.channelGain[i] = this.context.createGain();
-            this.input.connect(this.channelGain[i]);
-            this.channelGain[i].connect(this.merger, 0, i);
+            this.channelGain[i] = Gain("encoder-channel-" + i);
+            connect(this.input, this.channelGain[i]);
+            connect(this.channelGain[i], this.merger, 0, i);
         }
-        this.merger.connect(this.output);
+        connect(this.merger, this.output);
     }
 
+    private disposed = false;
     dispose(): void {
-        this.merger.disconnect(this.output);
-        let numChannels = (this.ambisonicOrder + 1) * (this.ambisonicOrder + 1);
-        for (let i = 0; i < numChannels; ++i) {
-            this.channelGain[i].disconnect(this.merger, 0, i);
-            this.input.disconnect(this.channelGain[i]);
+        if (!this.disposed) {
+            disconnect(this.input);
+
+            for (const node of this.channelGain) {
+                disconnect(node);
+            }
+
+
+            if (this.merger) {
+                disconnect(this.merger);
+            }
+
+            this.disposed = true;
         }
     }
 

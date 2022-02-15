@@ -1,8 +1,29 @@
 import { isFunction, isHTMLElement } from "../typeChecks";
+export function makeEnterKeyEventHandler(callback) {
+    return (ev) => {
+        const evt = ev;
+        if (!evt.shiftKey
+            && !evt.ctrlKey
+            && !evt.altKey
+            && !evt.metaKey
+            && evt.key === "Enter") {
+            callback(evt);
+        }
+    };
+}
+export function makeProgress(element) {
+    return (soFar, total) => {
+        element.max = total.toFixed(0);
+        element.value = soFar.toFixed(0);
+    };
+}
 /**
  * A setter functor for HTML element events.
  **/
 export class HtmlEvt {
+    name;
+    callback;
+    opts;
     /**
      * Creates a new setter functor for an HTML element event.
      * @param name - the name of the event to attach to.
@@ -18,7 +39,7 @@ export class HtmlEvt {
         this.opts = opts;
         Object.freeze(this);
     }
-    apply(elem) {
+    applyToElement(elem) {
         if (isHTMLElement(elem)) {
             this.add(elem);
         }
@@ -98,9 +119,16 @@ export function onHashChange(callback, opts) { return new HtmlEvt("hashchange", 
 export function onLostPointerCapture(callback, opts) { return new HtmlEvt("lostpointercapture", callback, opts); }
 export function onInput(callback, opts) { return new HtmlEvt("input", callback, opts); }
 export function onInvalid(callback, opts) { return new HtmlEvt("invalid", callback, opts); }
-export function onKeyDown(callback, opts) { return new HtmlEvt("keydown", callback, opts); }
-export function onKeyPress(callback, opts) { return new HtmlEvt("keypress", callback, opts); }
-export function onKeyUp(callback, opts) { return new HtmlEvt("keyup", callback, opts); }
+export function onKeyDown(callback, opts) { return new HtmlEvt("keydown", (evt) => callback(evt), opts); }
+export function onKeyPress(callback, opts) { return new HtmlEvt("keypress", (evt) => callback(evt), opts); }
+export function onKeyUp(callback, opts) { return new HtmlEvt("keyup", (evt) => callback(evt), opts); }
+export function onEnterKeyPressed(callback, opts) {
+    return onKeyUp((evt) => {
+        if (evt.key === "Enter") {
+            callback(evt);
+        }
+    }, opts);
+}
 export function onLanguageChange(callback, opts) { return new HtmlEvt("languagechange", callback, opts); }
 export function onLevelChange(callback, opts) { return new HtmlEvt("levelchange", callback, opts); }
 export function onLoad(callback, opts) { return new HtmlEvt("load", callback, opts); }

@@ -18,17 +18,26 @@
  * @author Andrew Allen <bitllama@google.com>
  */
 import { mat3, vec3 } from "gl-matrix";
-import { createFOARenderer, createHOARenderer } from "../omnitone/omnitone";
+import { connect, disconnect, Gain } from "kudzu/audio";
+import { FOARenderer } from "../omnitone/foa-renderer";
+import { HOARenderer } from "../omnitone/hoa-renderer";
 import { Encoder } from "./encoder";
 import { DEFAULT_AMBISONIC_ORDER, DEFAULT_FORWARD, DEFAULT_POSITION, DEFAULT_RENDERING_MODE, DEFAULT_UP } from "./utils";
 /**
  * Listener model to spatialize sources in an environment.
  */
 export class Listener {
+    tempMatrix3;
+    ambisonicOrder;
+    renderer;
+    position;
+    ambisonicOutput;
+    input;
+    output;
     /**
      * Listener model to spatialize sources in an environment.
      */
-    constructor(context, options) {
+    constructor(options) {
         // Use defaults for undefined arguments.
         options = Object.assign({
             ambisonicOrder: DEFAULT_AMBISONIC_ORDER,
@@ -46,47 +55,48 @@ export class Listener {
             Encoder.validateAmbisonicOrder(options.ambisonicOrder);
         // Create audio nodes.
         if (this.ambisonicOrder == 1) {
-            this.renderer = createFOARenderer(context, {
+            this.renderer = new FOARenderer({
                 renderingMode: options.renderingMode
             });
         }
         else if (this.ambisonicOrder > 1) {
-            this.renderer = createHOARenderer(context, {
+            this.renderer = new HOARenderer({
                 ambisonicOrder: this.ambisonicOrder,
                 renderingMode: options.renderingMode
             });
         }
         // These nodes are created in order to safely asynchronously load Omnitone
         // while the rest of the scene is being created.
-        this.input = context.createGain();
-        this.output = context.createGain();
-        this.ambisonicOutput = context.createGain();
+        this.input = Gain("listener-input");
+        this.output = Gain("listener-output");
+        this.ambisonicOutput = Gain("listener-ambisonic-input");
         // Initialize Omnitone (async) and connect to audio graph when complete.
         this.renderer.initialize().then(() => {
             // Connect pre-rotated soundfield to renderer.
-            this.input.connect(this.renderer.input);
+            connect(this.input, this.renderer);
             // Connect rotated soundfield to ambisonic output.
-            this.renderer.rotator.output.connect(this.ambisonicOutput);
+            connect(this.renderer.rotator, this.ambisonicOutput);
             // Connect binaurally-rendered soundfield to binaural output.
-            this.renderer.output.connect(this.output);
+            connect(this.renderer, this.output);
         });
         // Set orientation and update rotation matrix accordingly.
         this.setOrientation(options.forward, options.up);
+    }
+    disposed = false;
+    dispose() {
+        if (!this.disposed) {
+            disconnect(this.input);
+            disconnect(this.renderer.rotator);
+            disconnect(this.renderer);
+            this.renderer.dispose();
+            this.disposed = true;
+        }
     }
     getRenderingMode() {
         return this.renderer.getRenderingMode();
     }
     setRenderingMode(mode) {
         this.renderer.setRenderingMode(mode);
-    }
-    dispose() {
-        // Connect pre-rotated soundfield to renderer.
-        this.input.disconnect(this.renderer.input);
-        // Connect rotated soundfield to ambisonic output.
-        this.renderer.rotator.output.disconnect(this.ambisonicOutput);
-        // Connect binaurally-rendered soundfield to binaural output.
-        this.renderer.output.disconnect(this.output);
-        this.renderer.dispose();
     }
     /**
      * Set the source's orientation using forward and up vectors.

@@ -1,245 +1,218 @@
 import { once } from "../events/once";
 import { waitFor } from "../events/waitFor";
-import { renderCanvasFace, renderCanvasFaces, renderImageBitmapFace, renderImageBitmapFaces } from "../graphics2d/renderFace";
-import { sliceCubeMap } from "../graphics2d/sliceCubeMap";
-import { createUtilityCanvas, createUtilityCanvasFromImage, createUtilityCanvasFromImageBitmap, hasImageBitmap } from "../html/canvas";
+import { src } from "../html/attrs";
+import { hasImageBitmap } from "../html/canvas";
+import { isWorker } from "../html/flags";
 import { createScript } from "../html/script";
+import { Img } from "../html/tags";
+import { dumpProgress } from "../tasks/progressCallback";
 import { splitProgress } from "../tasks/splitProgress";
-import { isGoodNumber } from "../typeChecks";
-import { using } from "../using";
-export class Fetcher {
-    constructor() {
-        this._getCanvas = hasImageBitmap
-            ? this.getCanvasViaImageBitmap
-            : this.getCanvasViaImage;
-        this._getImageData = hasImageBitmap
-            ? this.getImageDataViaImageBitmap
-            : this.getImageDataViaImage;
-        this._getCubes = hasImageBitmap
-            ? this.getCubesViaImageBitmaps
-            : this.getCubesViaImage;
-        this._getEquiMaps = hasImageBitmap
-            ? this.getEquiMapViaImageBitmaps
-            : this.getEquiMapViaImage;
-    }
-    async getCanvas(path, onProgress) {
-        return await this._getCanvas(path, onProgress);
-    }
-    async getImageData(path, onProgress) {
-        return await this._getImageData(path, onProgress);
-    }
-    async getCubes(path, onProgress) {
-        return await this._getCubes(path, onProgress);
-    }
-    async getEquiMaps(path, interpolation, maxWidth, onProgress) {
-        return await this._getEquiMaps(path, interpolation, maxWidth, onProgress);
-    }
-    async readRequestResponse(path, request) {
-        const response = await request;
-        if (!response.ok) {
-            throw new Error(`[${response.status}] - ${response.statusText}. Path ${path}`);
+import { isDefined, isString, isXHRBodyInit } from "../typeChecks";
+function normalizeMap(map, key, value) {
+    const newMap = new Map();
+    if (isDefined(map)) {
+        for (const [key, value] of map) {
+            newMap.set(key, value);
         }
-        return response;
-    }
-    async getResponse(path) {
-        return await this.readRequestResponse(path, fetch(path));
-    }
-    async postObjectForResponse(path, obj) {
-        return await this.readRequestResponse(path, fetch(path, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(obj)
-        }));
-    }
-    async readResponseBuffer(path, response, onProgress) {
-        const contentType = response.headers.get("Content-Type");
-        if (!contentType) {
-            throw new Error("Server did not provide a content type");
+        if (!newMap.has(key)) {
+            newMap.set(key, value);
         }
-        let contentLength = 1;
-        const contentLengthStr = response.headers.get("Content-Length");
-        if (!contentLengthStr) {
-            console.warn(`Server did not provide a content length header. Path: ${path}`);
+    }
+    return newMap;
+}
+export async function fileToImage(file) {
+    const img = Img(src(file));
+    await once(img, "loaded");
+    return img;
+}
+function trackXHRProgress(name, xhr, target, onProgress, skipLoading, prevTask) {
+    return new Promise((resolve, reject) => {
+        let prevDone = !prevTask;
+        if (prevTask) {
+            prevTask.then(() => prevDone = true);
         }
-        else {
-            contentLength = parseInt(contentLengthStr, 10);
-            if (!isGoodNumber(contentLength)) {
-                console.warn(`Server did not provide a valid content length header. Value: ${contentLengthStr}, Path: ${path}`);
-                contentLength = 1;
+        let done = false;
+        let loaded = skipLoading;
+        function maybeResolve() {
+            if (loaded && done) {
+                resolve();
             }
         }
-        const hasContentLength = isGoodNumber(contentLength);
-        if (!hasContentLength) {
-            contentLength = 1;
-        }
-        if (!response.body) {
-            throw new Error("No response body!");
-        }
-        const reader = response.body.getReader();
-        const values = [];
-        let receivedLength = 0;
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-                break;
+        async function onError() {
+            if (prevDone) {
+                reject(xhr.status);
             }
-            if (value) {
-                values.push(value);
-                receivedLength += value.length;
-                if (onProgress) {
-                    onProgress(receivedLength, Math.max(receivedLength, contentLength), path);
+        }
+        target.addEventListener("loadstart", () => {
+            if (prevDone && !done) {
+                onProgress(0, 1, name);
+            }
+        });
+        target.addEventListener("progress", (ev) => {
+            if (prevDone && !done) {
+                const evt = ev;
+                onProgress(evt.loaded, Math.max(evt.loaded, evt.total), name);
+                if (evt.loaded === evt.total) {
+                    loaded = true;
+                    maybeResolve();
                 }
             }
+        });
+        target.addEventListener("load", () => {
+            if (prevDone && !done) {
+                onProgress(1, 1, name);
+                done = true;
+                maybeResolve();
+            }
+        });
+        target.addEventListener("error", onError);
+        target.addEventListener("abort", onError);
+    });
+}
+function setXHRHeaders(xhr, method, path, xhrType, headers) {
+    xhr.open(method, path);
+    xhr.responseType = xhrType;
+    if (headers) {
+        for (const [key, value] of headers) {
+            xhr.setRequestHeader(key, value);
         }
-        const buffer = new ArrayBuffer(receivedLength);
-        const array = new Uint8Array(buffer);
-        receivedLength = 0;
-        for (const value of values) {
-            array.set(value, receivedLength);
-            receivedLength += value.length;
+    }
+}
+async function blobToBuffer(blob) {
+    const buffer = await blob.arrayBuffer();
+    return {
+        buffer,
+        contentType: blob.type
+    };
+}
+export class Fetcher {
+    async getXHR(path, xhrType, headers, onProgress) {
+        onProgress = onProgress || dumpProgress;
+        const xhr = new XMLHttpRequest();
+        const download = trackXHRProgress("downloading: " + path, xhr, xhr, onProgress, true);
+        setXHRHeaders(xhr, "GET", path, xhrType, headers);
+        xhr.send();
+        await download;
+        return xhr.response;
+    }
+    async postXHR(path, xhrType, obj, contentType, headers, onProgress) {
+        onProgress = onProgress || dumpProgress;
+        const [upProg, downProg] = splitProgress(onProgress, [1, 1]);
+        const xhr = new XMLHttpRequest();
+        const upload = trackXHRProgress("uploading", xhr, xhr.upload, upProg, false);
+        const download = trackXHRProgress("saving", xhr, xhr, downProg, true, upload);
+        let body = null;
+        if (!(obj instanceof FormData)
+            && isDefined(contentType)) {
+            headers = normalizeMap(headers, "Content-Type", contentType);
         }
-        if (onProgress) {
-            onProgress(1, 1, path);
+        if (isXHRBodyInit(obj) && !isString(obj)) {
+            body = obj;
         }
-        return { buffer, contentType };
+        else if (isDefined(obj)) {
+            body = JSON.stringify(obj);
+        }
+        setXHRHeaders(xhr, "POST", path, xhrType, headers);
+        if (isDefined(body)) {
+            xhr.send(body);
+        }
+        else {
+            xhr.send();
+        }
+        await upload;
+        await download;
+        return xhr.response;
     }
-    async getBuffer(path, onProgress) {
-        const response = await this.getResponse(path);
-        return await this.readResponseBuffer(path, response, onProgress);
+    async getBlob(path, headers, onProgress) {
+        return await this.getXHR(path, "blob", headers, onProgress);
     }
-    async postObjectForBuffer(path, obj, onProgress) {
-        const response = await this.postObjectForResponse(path, obj);
-        return await this.readResponseBuffer(path, response, onProgress);
+    async postObjectForBlob(path, obj, contentType, headers, onProgress) {
+        return await this.postXHR(path, "blob", obj, contentType, headers, onProgress);
     }
-    async getBlob(path, onProgress) {
-        const { buffer, contentType } = await this.getBuffer(path, onProgress);
-        return new Blob([buffer], { type: contentType });
+    async getBuffer(path, headers, onProgress) {
+        const blob = await this.getBlob(path, headers, onProgress);
+        return await blobToBuffer(blob);
     }
-    async postObjectForBlob(path, obj, onProgress) {
-        const { buffer, contentType } = await this.postObjectForBuffer(path, obj, onProgress);
-        return new Blob([buffer], { type: contentType });
+    async postObjectForBuffer(path, obj, contentType, headers, onProgress) {
+        const blob = await this.postObjectForBlob(path, obj, contentType, headers, onProgress);
+        return await blobToBuffer(blob);
     }
-    async getFile(path, onProgress) {
-        const blob = await this.getBlob(path, onProgress);
+    async getFile(path, headers, onProgress) {
+        const blob = await this.getBlob(path, headers, onProgress);
         return URL.createObjectURL(blob);
     }
-    async postObjectForFile(path, obj, onProgress) {
-        const blob = await this.postObjectForBlob(path, obj, onProgress);
+    async postObjectForFile(path, obj, contentType, headers, onProgress) {
+        const blob = await this.postObjectForBlob(path, obj, contentType, headers, onProgress);
         return URL.createObjectURL(blob);
     }
-    async readFileImage(file) {
-        const img = new Image();
-        img.src = file;
-        if (!img.complete) {
-            await once(img, "load", "error");
-        }
-        return img;
+    async getText(path, headers, onProgress) {
+        return await this.getXHR(path, "text", headers, onProgress);
     }
-    async getImageBitmap(path, onProgress) {
-        const blob = await this.getBlob(path, onProgress);
+    async postObjectForText(path, obj, contentType, headers, onProgress) {
+        return this.postXHR(path, "text", obj, contentType, headers, onProgress);
+    }
+    async getObject(path, headers, onProgress) {
+        if (!headers) {
+            headers = new Map();
+        }
+        if (!headers.has("Accept")) {
+            headers.set("Accept", "application/json");
+        }
+        return await this.getXHR(path, "json", headers, onProgress);
+    }
+    async postObjectForObject(path, obj, contentType, headers, onProgress) {
+        return await this.postXHR(path, "json", obj, contentType, headers, onProgress);
+    }
+    async postObject(path, obj, contentType, headers, onProgress) {
+        await this.postXHR(path, "", obj, contentType, headers, onProgress);
+    }
+    async getXml(path, headers, onProgress) {
+        const doc = await this.getXHR(path, "document", headers, onProgress);
+        return doc.documentElement;
+    }
+    async postObjectForXml(path, obj, contentType, headers, onProgress) {
+        const doc = await this.postXHR(path, "document", obj, contentType, headers, onProgress);
+        return doc.documentElement;
+    }
+    async getImageBitmap(path, headers, onProgress) {
+        const blob = await this.getBlob(path, headers, onProgress);
         return await createImageBitmap(blob);
     }
-    async getImage(path, onProgress) {
-        const file = await this.getFile(path, onProgress);
-        return await this.readFileImage(file);
+    async getCanvasImage(path, headers, onProgress) {
+        if (hasImageBitmap) {
+            return await this.getImageBitmap(path, headers, onProgress);
+        }
+        else if (isWorker) {
+            return null;
+        }
+        else {
+            const file = await this.getFile(path, headers, onProgress);
+            return await fileToImage(file);
+        }
     }
-    async postObjectForImageBitmap(path, obj, onProgress) {
-        const blob = await this.postObjectForBlob(path, obj, onProgress);
+    async postObjectForImageBitmap(path, obj, contentType, headers, onProgress) {
+        const blob = await this.postObjectForBlob(path, obj, contentType, headers, onProgress);
         return await createImageBitmap(blob);
     }
-    async postObjectForImage(path, obj, onProgress) {
-        const file = await this.postObjectForFile(path, obj, onProgress);
-        return await this.readFileImage(file);
-    }
-    async getCanvasViaImageBitmap(path, onProgress) {
-        return using(await this.getImageBitmap(path, onProgress), (img) => {
-            return createUtilityCanvasFromImageBitmap(img);
-        });
-    }
-    async getCanvasViaImage(path, onProgress) {
-        const img = await this.getImage(path, onProgress);
-        return createUtilityCanvasFromImage(img);
-    }
-    readImageData(img) {
-        const canv = createUtilityCanvas(img.width, img.height);
-        const g = canv.getContext("2d");
-        if (!g) {
-            throw new Error("Couldn't create a 2D canvas context");
+    async postObjectForCanvasImage(path, obj, contentType, headers, onProgress) {
+        if (hasImageBitmap) {
+            return await this.postObjectForImageBitmap(path, obj, contentType, headers, onProgress);
         }
-        g.drawImage(img, 0, 0);
-        return g.getImageData(0, 0, canv.width, canv.height);
-    }
-    async getImageDataViaImageBitmap(path, onProgress) {
-        return using(await this.getImageBitmap(path, onProgress), (img) => {
-            return this.readImageData(img);
-        });
-    }
-    async getImageDataViaImage(path, onProgress) {
-        const img = await this.getImage(path, onProgress);
-        return this.readImageData(img);
-    }
-    async getCubesViaImageBitmaps(path, onProgress) {
-        const img = await this.getImageBitmap(path, onProgress);
-        const canvs = sliceCubeMap(img);
-        return await Promise.all(canvs.map((canv) => createImageBitmap(canv)));
-    }
-    async getCubesViaImage(path, onProgress) {
-        const img = await this.getImage(path, onProgress);
-        return sliceCubeMap(img);
-    }
-    async getEquiMapViaImageBitmaps(path, interpolation, maxWidth, onProgress) {
-        const splits = splitProgress(onProgress, [1, 6]);
-        const imgData = await this.getImageDataViaImageBitmap(path, splits.shift());
-        return await renderImageBitmapFaces(renderImageBitmapFace, imgData, interpolation, maxWidth, splits.shift());
-    }
-    async getEquiMapViaImage(path, interpolation, maxWidth, onProgress) {
-        const splits = splitProgress(onProgress, [1, 6]);
-        const imgData = await this.getImageDataViaImage(path, splits.shift());
-        return await renderCanvasFaces(renderCanvasFace, imgData, interpolation, maxWidth, splits.shift());
-    }
-    readBufferText(buffer) {
-        const decoder = new TextDecoder("utf-8");
-        const text = decoder.decode(buffer);
-        return text;
-    }
-    async getText(path, onProgress) {
-        const { buffer } = await this.getBuffer(path, onProgress);
-        return this.readBufferText(buffer);
-    }
-    async postObjectForText(path, obj, onProgress) {
-        const { buffer } = await this.postObjectForBuffer(path, obj, onProgress);
-        return this.readBufferText(buffer);
-    }
-    async getObject(path, onProgress) {
-        const text = await this.getText(path, onProgress);
-        return JSON.parse(text);
-    }
-    async postObjectForObject(path, obj, onProgress) {
-        const text = await this.postObjectForText(path, obj, onProgress);
-        return JSON.parse(text);
-    }
-    async postObject(path, obj) {
-        await this.postObjectForResponse(path, obj);
-    }
-    readTextXml(text) {
-        const parser = new DOMParser();
-        const xml = parser.parseFromString(text, "text/xml");
-        return xml.documentElement;
-    }
-    async getXml(path, onProgress) {
-        const text = await this.getText(path, onProgress);
-        return this.readTextXml(text);
-    }
-    async postObjectForXml(path, obj, onProgress) {
-        const text = await this.postObjectForText(path, obj, onProgress);
-        return this.readTextXml(text);
+        else if (isWorker) {
+            return null;
+        }
+        else {
+            const file = await this.postObjectForFile(path, obj, contentType, headers, onProgress);
+            return await fileToImage(file);
+        }
     }
     async loadScript(path, test, onProgress) {
+        if (isWorker) {
+            return;
+        }
         if (!test()) {
             const scriptLoadTask = waitFor(test);
-            const file = await this.getFile(path, onProgress);
+            const file = await this.getFile(path, null, onProgress);
             createScript(file);
             await scriptLoadTask;
         }
@@ -247,8 +220,13 @@ export class Fetcher {
             onProgress(1, 1, "skip");
         }
     }
-    async renderImageBitmapFace(readData, faceName, interpolation, maxWidth, onProgress) {
-        return await renderImageBitmapFace(readData, faceName, interpolation, maxWidth, onProgress);
+    async getWASM(path, imports, onProgress) {
+        const wasmBuffer = await this.getBuffer(path, null, onProgress);
+        if (wasmBuffer.contentType !== "application/wasm") {
+            throw new Error("Server did not respond with WASM file. Was: " + wasmBuffer.contentType);
+        }
+        const wasmModule = await WebAssembly.instantiate(wasmBuffer.buffer, imports);
+        return wasmModule.instance.exports;
     }
 }
 //# sourceMappingURL=Fetcher.js.map

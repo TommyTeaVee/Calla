@@ -1,16 +1,16 @@
 import { arrayRemove } from "kudzu/arrays/arrayRemove";
 import { arraySortedInsert } from "kudzu/arrays/arraySortedInsert";
-import { once } from "kudzu/events/once";
+import { Logger } from "kudzu/debugging/Logger";
 import { waitFor } from "kudzu/events/waitFor";
 import { assertNever } from "kudzu/typeChecks";
 import {
-    CallaAvatarChangedEvent,
     CallaChatEvent,
     CallaEmojiAvatarEvent,
     CallaEmoteEvent,
     CallaMetadataEventType,
     CallaParticipantJoinedEvent,
     CallaParticipantLeftEvent,
+    CallaPhotoAvatarEvent,
     CallaUserPointerEvent,
     CallaUserPosedEvent
 } from "../../CallaEvents";
@@ -26,6 +26,7 @@ export interface JitsiHaxCommand {
 }
 
 const JITSI_HAX_FINGERPRINT = "Calla";
+const logger = new Logger();
 
 export class JitsiMetadataClient
     extends BaseMetadataClient {
@@ -33,14 +34,14 @@ export class JitsiMetadataClient
     private remoteUserIDs = new Array<string>();
 
     constructor(private tele: JitsiTeleconferenceClient) {
-        super(250);
+        super();
 
         this.tele.addEventListener("participantJoined", (evt: CallaParticipantJoinedEvent) => {
-            arraySortedInsert(this.remoteUserIDs, evt.id, false);
+            arraySortedInsert(this.remoteUserIDs, evt.userID, false);
         });
 
         this.tele.addEventListener("participantLeft", (evt: CallaParticipantLeftEvent) => {
-            arrayRemove(this.remoteUserIDs, evt.id);
+            arrayRemove(this.remoteUserIDs, evt.userID);
         });
     }
 
@@ -61,14 +62,14 @@ export class JitsiMetadataClient
                 const command = data.command;
                 const values = data.values;
                 switch (command) {
-                    case "avatarChanged":
-                        this.dispatchEvent(new CallaAvatarChangedEvent(fromUserID, values[0]));
-                        break;
                     case "emote":
                         this.dispatchEvent(new CallaEmoteEvent(fromUserID, values[0]));
                         break;
                     case "setAvatarEmoji":
                         this.dispatchEvent(new CallaEmojiAvatarEvent(fromUserID, values[0]));
+                        break;
+                    case "setAvatarURL":
+                        this.dispatchEvent(new CallaPhotoAvatarEvent(fromUserID, values[0]));
                         break;
                     case "userPosed":
                         this.dispatchEvent(new CallaUserPosedEvent(fromUserID, values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7], values[8]));
@@ -79,13 +80,15 @@ export class JitsiMetadataClient
                     case "chat":
                         this.dispatchEvent(new CallaChatEvent(fromUserID, values[0]));
                         break;
+                    case "info":
+                    case "error":
+                        // not used here
+                        break;
                     default:
                         assertNever(command);
                 }
             }
         });
-
-        await once(this.tele.conference, JitsiMeetJS.events.conference.DATA_CHANNEL_OPENED);
         this._status = ConnectionState.Connected;
     }
 
@@ -102,20 +105,52 @@ export class JitsiMetadataClient
         // JitsiTeleconferenceClient will already disconnect
     }
 
-    private sendJitsiHax(toUserID: string, command: CallaMetadataEventType, ...values: any[]): void {
+    private toRoom(command: string, ...values: any[]): Promise<void> {
+        logger.log(`callInternal:${command}`, ...values);
+        this.tele.conference.broadcastEndpointMessage({
+            hax: JITSI_HAX_FINGERPRINT,
+            command,
+            values
+        });
+        return Promise.resolve();
+    }
+
+    private toUser(command: string, toUserID: string, ...values: any[]): Promise<void> {
+        logger.log(`callInternal:${toUserID}:${command}`, ...values);
         this.tele.conference.sendMessage({
             hax: JITSI_HAX_FINGERPRINT,
             command,
             values
         }, toUserID);
+        return Promise.resolve();
     }
 
-    protected callInternal(command: CallaMetadataEventType, ...values: any[]): Promise<void> {
-        for (const toUserID of this.remoteUserIDs) {
-            this.sendJitsiHax(toUserID, command, ...values);
-        }
+    setLocalPose(px: number, py: number, pz: number, fx: number, fy: number, fz: number, ux: number, uy: number, uz: number): void {
+        this.toRoom("userPosed", px, py, pz, fx, fy, fz, ux, uy, uz);
+    }
 
-        return Promise.resolve();
+    tellLocalPose(toUserID: string, px: number, py: number, pz: number, fx: number, fy: number, fz: number, ux: number, uy: number, uz: number): void {
+        this.toUser("userPosedSingle", toUserID, px, py, pz, fx, fy, fz, ux, uy, uz);
+    }
+
+    setLocalPointer(name: string, px: number, py: number, pz: number, fx: number, fy: number, fz: number, ux: number, uy: number, uz: number): void {
+        this.toRoom("userPointer", name, px, py, pz, fx, fy, fz, ux, uy, uz);
+    }
+
+    setAvatarEmoji(toUserID: string, emoji: string): void {
+        this.toUser("setAvatarEmoji", toUserID, emoji);
+    }
+
+    setAvatarURL(toUserID: string, url: string): void {
+        this.toUser("setAvatarURL", toUserID, url);
+    }
+
+    emote(emoji: string): void {
+        this.toRoom("emote", emoji);
+    }
+
+    chat(text: string): void {
+        this.toRoom("chat", text);
     }
 
     protected async stopInternal(): Promise<void> {

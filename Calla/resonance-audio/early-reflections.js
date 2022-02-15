@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 import { vec3 } from "gl-matrix";
+import { BiquadFilter, ChannelMerger, connect, Delay, disconnect, Gain } from "kudzu/audio";
 import { isArray, isGoodNumber } from "kudzu/typeChecks";
 import { Direction } from "./Direction";
 import { DEFAULT_POSITION, DEFAULT_REFLECTION_COEFFICIENTS, DEFAULT_REFLECTION_CUTOFF_FREQUENCY, DEFAULT_REFLECTION_MAX_DURATION, DEFAULT_REFLECTION_MIN_DISTANCE, DEFAULT_REFLECTION_MULTIPLIER, DEFAULT_ROOM_DIMENSIONS, DEFAULT_SPEED_OF_SOUND, DirectionSign, DirectionToAxis, DirectionToDimension } from "./utils";
@@ -21,30 +22,37 @@ import { DEFAULT_POSITION, DEFAULT_REFLECTION_COEFFICIENTS, DEFAULT_REFLECTION_C
 * Ray-tracing-based early reflections model.
 */
 export class EarlyReflections {
+    listenerPosition = vec3.copy(vec3.create(), DEFAULT_POSITION);
+    speedOfSound = DEFAULT_SPEED_OF_SOUND;
+    coefficients = {
+        left: DEFAULT_REFLECTION_COEFFICIENTS.left,
+        right: DEFAULT_REFLECTION_COEFFICIENTS.right,
+        front: DEFAULT_REFLECTION_COEFFICIENTS.front,
+        back: DEFAULT_REFLECTION_COEFFICIENTS.back,
+        up: DEFAULT_REFLECTION_COEFFICIENTS.up,
+        down: DEFAULT_REFLECTION_COEFFICIENTS.down,
+    };
+    halfDimensions = {
+        width: 0.5 * DEFAULT_ROOM_DIMENSIONS.width,
+        height: 0.5 * DEFAULT_ROOM_DIMENSIONS.height,
+        depth: 0.5 * DEFAULT_ROOM_DIMENSIONS.depth,
+    };
+    inverters;
+    merger;
+    lowpass;
+    delays;
+    gains;
+    input;
+    output;
     /**
      * Ray-tracing-based early reflections model.
      */
-    constructor(context, options) {
-        this.listenerPosition = vec3.copy(vec3.create(), DEFAULT_POSITION);
-        this.speedOfSound = DEFAULT_SPEED_OF_SOUND;
-        this.coefficients = {
-            left: DEFAULT_REFLECTION_COEFFICIENTS.left,
-            right: DEFAULT_REFLECTION_COEFFICIENTS.right,
-            front: DEFAULT_REFLECTION_COEFFICIENTS.front,
-            back: DEFAULT_REFLECTION_COEFFICIENTS.back,
-            up: DEFAULT_REFLECTION_COEFFICIENTS.up,
-            down: DEFAULT_REFLECTION_COEFFICIENTS.down,
-        };
-        this.halfDimensions = {
-            width: 0.5 * DEFAULT_ROOM_DIMENSIONS.width,
-            height: 0.5 * DEFAULT_ROOM_DIMENSIONS.height,
-            depth: 0.5 * DEFAULT_ROOM_DIMENSIONS.depth,
-        };
+    constructor(options) {
         if (options) {
-            if (isGoodNumber(options?.speedOfSound)) {
+            if (isGoodNumber(options.speedOfSound)) {
                 this.speedOfSound = options.speedOfSound;
             }
-            if (isArray(options?.listenerPosition)
+            if (isArray(options.listenerPosition)
                 && options.listenerPosition.length === 3
                 && isGoodNumber(options.listenerPosition[0])
                 && isGoodNumber(options.listenerPosition[1])
@@ -55,30 +63,30 @@ export class EarlyReflections {
             }
         }
         // Create nodes.
-        this.input = context.createGain();
-        this.output = context.createGain();
-        this.lowpass = context.createBiquadFilter();
-        this.merger = context.createChannelMerger(4); // First-order encoding only.
+        this.input = Gain("early-reflections-input");
+        this.output = Gain("early-reflections-output");
+        this.lowpass = BiquadFilter("early-reflection-lowpass-filter");
+        this.merger = ChannelMerger("early-reflection-merger", 4); // First-order encoding only.
         this.delays = {
-            left: context.createDelay(DEFAULT_REFLECTION_MAX_DURATION),
-            right: context.createDelay(DEFAULT_REFLECTION_MAX_DURATION),
-            front: context.createDelay(DEFAULT_REFLECTION_MAX_DURATION),
-            back: context.createDelay(DEFAULT_REFLECTION_MAX_DURATION),
-            up: context.createDelay(DEFAULT_REFLECTION_MAX_DURATION),
-            down: context.createDelay(DEFAULT_REFLECTION_MAX_DURATION)
+            left: Delay("early-reflection-delay-left", DEFAULT_REFLECTION_MAX_DURATION),
+            right: Delay("early-reflection-delay-right", DEFAULT_REFLECTION_MAX_DURATION),
+            front: Delay("early-reflection-delay-front", DEFAULT_REFLECTION_MAX_DURATION),
+            back: Delay("early-reflection-delay-back", DEFAULT_REFLECTION_MAX_DURATION),
+            up: Delay("early-reflection-delay-up", DEFAULT_REFLECTION_MAX_DURATION),
+            down: Delay("early-reflection-delay-down", DEFAULT_REFLECTION_MAX_DURATION)
         };
         this.gains = {
-            left: context.createGain(),
-            right: context.createGain(),
-            front: context.createGain(),
-            back: context.createGain(),
-            up: context.createGain(),
-            down: context.createGain()
+            left: Gain("early-reflections-gains-left"),
+            right: Gain("early-reflections-gains-right"),
+            front: Gain("early-reflections-gains-front"),
+            back: Gain("early-reflections-gains-back"),
+            up: Gain("early-reflections-gains-up"),
+            down: Gain("early-reflections-gains-down")
         };
         this.inverters = {
-            right: context.createGain(),
-            back: context.createGain(),
-            down: context.createGain()
+            right: Gain("early-reflections-inverters-right"),
+            back: Gain("early-reflections-inverters-back"),
+            down: Gain("early-reflections-inverters-down")
         };
         // Connect audio graph for each wall reflection and initialize encoder directions, set delay times and gains to 0.
         for (const direction of Object.values(Direction)) {
@@ -88,9 +96,9 @@ export class EarlyReflections {
             gain.gain.value = 0;
             this.delays[direction] = delay;
             this.gains[direction] = gain;
-            this.lowpass.connect(delay);
-            delay.connect(gain);
-            gain.connect(this.merger, 0, 0);
+            connect(this.lowpass, delay);
+            connect(delay, gain);
+            connect(gain, this.merger, 0, 0);
             // Initialize inverters for opposite walls ('right', 'down', 'back' only).
             if (direction === Direction.Right
                 || direction == Direction.Back
@@ -98,7 +106,7 @@ export class EarlyReflections {
                 this.inverters[direction].gain.value = -1;
             }
         }
-        this.input.connect(this.lowpass);
+        connect(this.input, this.lowpass);
         // Initialize lowpass filter.
         this.lowpass.type = 'lowpass';
         this.lowpass.frequency.value = DEFAULT_REFLECTION_CUTOFF_FREQUENCY;
@@ -111,18 +119,36 @@ export class EarlyReflections {
         // Down: [1 0 -1 0]
         // Front: [1 0 0 1]
         // Back: [1 0 0 -1]
-        this.gains.left.connect(this.merger, 0, 1);
-        this.gains.right.connect(this.inverters.right);
-        this.inverters.right.connect(this.merger, 0, 1);
-        this.gains.up.connect(this.merger, 0, 2);
-        this.gains.down.connect(this.inverters.down);
-        this.inverters.down.connect(this.merger, 0, 2);
-        this.gains.front.connect(this.merger, 0, 3);
-        this.gains.back.connect(this.inverters.back);
-        this.inverters.back.connect(this.merger, 0, 3);
-        this.merger.connect(this.output);
+        connect(this.gains.left, this.merger, 0, 1);
+        connect(this.gains.right, this.inverters.right);
+        connect(this.inverters.right, this.merger, 0, 1);
+        connect(this.gains.up, this.merger, 0, 2);
+        connect(this.gains.down, this.inverters.down);
+        connect(this.inverters.down, this.merger, 0, 2);
+        connect(this.gains.front, this.merger, 0, 3);
+        connect(this.gains.back, this.inverters.back);
+        connect(this.inverters.back, this.merger, 0, 3);
+        connect(this.merger, this.output);
         // Initialize.
-        this.setRoomProperties(options?.dimensions, options?.coefficients);
+        this.setRoomProperties(options && options.dimensions, options && options.coefficients);
+    }
+    disposed = false;
+    dispose() {
+        if (!this.disposed) {
+            disconnect(this.input);
+            disconnect(this.lowpass);
+            disconnect(this.merger);
+            for (const property of Object.values(Direction)) {
+                disconnect(this.delays[property]);
+                disconnect(this.gains[property]);
+                if (property === "right"
+                    || property === "back"
+                    || property === "down") {
+                    disconnect(this.inverters[property]);
+                }
+            }
+            this.disposed = true;
+        }
     }
     /**
      * Set the room's properties which determines the characteristics of
@@ -136,7 +162,7 @@ export class EarlyReflections {
      * DEFAULT_REFLECTION_COEFFICIENTS}.
      */
     setRoomProperties(dimensions, coefficients) {
-        if (dimensions == undefined) {
+        if (!dimensions) {
             dimensions = {
                 width: DEFAULT_ROOM_DIMENSIONS.width,
                 height: DEFAULT_ROOM_DIMENSIONS.height,
@@ -150,7 +176,7 @@ export class EarlyReflections {
             this.halfDimensions.height = 0.5 * dimensions.height;
             this.halfDimensions.depth = 0.5 * dimensions.depth;
         }
-        if (coefficients == undefined) {
+        if (!coefficients) {
             coefficients = {
                 left: DEFAULT_REFLECTION_COEFFICIENTS.left,
                 right: DEFAULT_REFLECTION_COEFFICIENTS.right,
@@ -175,34 +201,6 @@ export class EarlyReflections {
         }
         // Update listener position with new room properties.
         this.setListenerPosition(this.listenerPosition);
-    }
-    dispose() {
-        // Connect nodes.
-        this.input.disconnect(this.lowpass);
-        for (const property of Object.values(Direction)) {
-            const delay = this.delays[property];
-            const gain = this.gains[property];
-            this.lowpass.disconnect(delay);
-            delay.disconnect(gain);
-            gain.disconnect(this.merger, 0, 0);
-        }
-        // Connect gains to ambisonic channel output.
-        // Left: [1 1 0 0]
-        // Right: [1 -1 0 0]
-        // Up: [1 0 1 0]
-        // Down: [1 0 -1 0]
-        // Front: [1 0 0 1]
-        // Back: [1 0 0 -1]
-        this.gains.left.disconnect(this.merger, 0, 1);
-        this.gains.right.disconnect(this.inverters.right);
-        this.inverters.right.disconnect(this.merger, 0, 1);
-        this.gains.up.disconnect(this.merger, 0, 2);
-        this.gains.down.disconnect(this.inverters.down);
-        this.inverters.down.disconnect(this.merger, 0, 2);
-        this.gains.front.disconnect(this.merger, 0, 3);
-        this.gains.back.disconnect(this.inverters.back);
-        this.inverters.back.disconnect(this.merger, 0, 3);
-        this.merger.disconnect(this.output);
     }
     /**
      * Set the listener's position (in meters),

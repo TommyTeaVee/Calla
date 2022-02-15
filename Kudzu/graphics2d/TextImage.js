@@ -1,55 +1,119 @@
-import { TypedEvent, TypedEventBase } from "../events/EventBase";
+import { TypedEvent } from "../events/EventBase";
 import { createUtilityCanvas, setContextSize } from "../html/canvas";
 import { clamp } from "../math/clamp";
-import { isNumber } from "../typeChecks";
-import { loadFont, makeFont } from "./fonts";
-const redrawnEvt = new TypedEvent("redrawn");
-export class TextImage extends TypedEventBase {
-    constructor() {
-        super();
-        this._minWidth = null;
-        this._maxWidth = null;
-        this._minHeight = null;
-        this._maxHeight = null;
-        this._strokeColor = null;
-        this._strokeSize = null;
-        this._bgColor = null;
-        this._value = null;
-        this._scale = 1;
-        this._fillColor = "black";
-        this._textDirection = "horizontal";
-        this._wrapWords = true;
-        this._fontStyle = "normal";
-        this._fontVariant = "normal";
-        this._fontWeight = "normal";
-        this._fontFamily = "sans-serif";
-        this._fontSize = 20;
-        this._padding = {
-            top: 0,
-            right: 0,
-            bottom: 0,
-            left: 0
-        };
-        this._canvas = createUtilityCanvas(10, 10);
-        const g = this.canvas.getContext("2d");
-        if (!g) {
-            throw new Error("Couldn't create a graphics context for the TextImage canvas.");
+import { isDefined, isNullOrUndefined, isNumber } from "../typeChecks";
+import { CanvasImage } from "./CanvasImage";
+import { makeFont } from "./fonts";
+export class TextImage extends CanvasImage {
+    trueWidth = null;
+    trueHeight = null;
+    trueFontSize = null;
+    dx = null;
+    _minWidth = null;
+    _maxWidth = null;
+    _minHeight = null;
+    _maxHeight = null;
+    _freezeDimensions = false;
+    _dimensionsFrozen = false;
+    _bgFillColor = null;
+    _bgStrokeColor = null;
+    _bgStrokeSize = null;
+    _textStrokeColor = null;
+    _textStrokeSize = null;
+    _textFillColor = "black";
+    _textDirection = "horizontal";
+    _wrapWords = true;
+    _fontStyle = "normal";
+    _fontVariant = "normal";
+    _fontWeight = "normal";
+    _fontFamily = "sans-serif";
+    _fontSize = 20;
+    _padding;
+    _value = null;
+    notReadyEvt = new TypedEvent("notready");
+    constructor(options) {
+        super(10, 10, options);
+        if (isDefined(options)) {
+            if (isDefined(options.minWidth)) {
+                this._minWidth = options.minWidth;
+            }
+            if (isDefined(options.maxWidth)) {
+                this._maxWidth = options.maxWidth;
+            }
+            if (isDefined(options.minHeight)) {
+                this._minHeight = options.minHeight;
+            }
+            if (isDefined(options.maxHeight)) {
+                this._maxHeight = options.maxHeight;
+            }
+            if (isDefined(options.freezeDimensions)) {
+                this._freezeDimensions = options.freezeDimensions;
+            }
+            if (isDefined(options.textStrokeColor)) {
+                this._textStrokeColor = options.textStrokeColor;
+            }
+            if (isDefined(options.textStrokeSize)) {
+                this._textStrokeSize = options.textStrokeSize;
+            }
+            if (isDefined(options.bgFillColor)) {
+                this._bgFillColor = options.bgFillColor;
+            }
+            if (isDefined(options.bgStrokeColor)) {
+                this._bgStrokeColor = options.bgStrokeColor;
+            }
+            if (isDefined(options.bgStrokeSize)) {
+                this._bgStrokeSize = options.bgStrokeSize;
+            }
+            if (isDefined(options.value)) {
+                this._value = options.value;
+            }
+            if (isDefined(options.textFillColor)) {
+                this._textFillColor = options.textFillColor;
+            }
+            if (isDefined(options.textDirection)) {
+                this._textDirection = options.textDirection;
+            }
+            if (isDefined(options.wrapWords)) {
+                this._wrapWords = options.wrapWords;
+            }
+            if (isDefined(options.fontStyle)) {
+                this._fontStyle = options.fontStyle;
+            }
+            if (isDefined(options.fontVariant)) {
+                this._fontVariant = options.fontVariant;
+            }
+            if (isDefined(options.fontWeight)) {
+                this._fontWeight = options.fontWeight;
+            }
+            if (isDefined(options.fontFamily)) {
+                this._fontFamily = options.fontFamily;
+            }
+            if (isDefined(options.fontSize)) {
+                this._fontSize = options.fontSize;
+            }
+            if (isDefined(options.padding)) {
+                if (isNumber(options.padding)) {
+                    this._padding = {
+                        left: options.padding,
+                        right: options.padding,
+                        top: options.padding,
+                        bottom: options.padding
+                    };
+                }
+                else {
+                    this._padding = options.padding;
+                }
+            }
         }
-        this._g = g;
-    }
-    async loadFontAndSetText(value = null) {
-        const font = makeFont(this);
-        await loadFont(font, value);
-        this.value = value;
-    }
-    get scale() {
-        return this._scale;
-    }
-    set scale(v) {
-        if (this.scale !== v) {
-            this._scale = v;
-            this.redraw();
+        if (isNullOrUndefined(this._padding)) {
+            this._padding = {
+                top: 0,
+                right: 0,
+                bottom: 0,
+                left: 0
+            };
         }
+        this.redraw();
     }
     get minWidth() {
         return this._minWidth;
@@ -86,15 +150,6 @@ export class TextImage extends TypedEventBase {
             this._maxHeight = v;
             this.redraw();
         }
-    }
-    get canvas() {
-        return this._canvas;
-    }
-    get width() {
-        return this.canvas.width / this.scale;
-    }
-    get height() {
-        return this.canvas.height / this.scale;
     }
     get padding() {
         return this._padding;
@@ -174,39 +229,57 @@ export class TextImage extends TypedEventBase {
             this.redraw();
         }
     }
-    get fillColor() {
-        return this._fillColor;
+    get textFillColor() {
+        return this._textFillColor;
     }
-    set fillColor(v) {
-        if (this.fillColor !== v) {
-            this._fillColor = v;
+    set textFillColor(v) {
+        if (this.textFillColor !== v) {
+            this._textFillColor = v;
             this.redraw();
         }
     }
-    get strokeColor() {
-        return this._strokeColor;
+    get textStrokeColor() {
+        return this._textStrokeColor;
     }
-    set strokeColor(v) {
-        if (this.strokeColor !== v) {
-            this._strokeColor = v;
+    set textStrokeColor(v) {
+        if (this.textStrokeColor !== v) {
+            this._textStrokeColor = v;
             this.redraw();
         }
     }
-    get strokeSize() {
-        return this._strokeSize;
+    get textStrokeSize() {
+        return this._textStrokeSize;
     }
-    set strokeSize(v) {
-        if (this.strokeSize !== v) {
-            this._strokeSize = v;
+    set textStrokeSize(v) {
+        if (this.textStrokeSize !== v) {
+            this._textStrokeSize = v;
             this.redraw();
         }
     }
-    get bgColor() {
-        return this._bgColor;
+    get bgFillColor() {
+        return this._bgFillColor;
     }
-    set bgColor(v) {
-        if (this.bgColor !== v) {
-            this._bgColor = v;
+    set bgFillColor(v) {
+        if (this.bgFillColor !== v) {
+            this._bgFillColor = v;
+            this.redraw();
+        }
+    }
+    get bgStrokeColor() {
+        return this._bgStrokeColor;
+    }
+    set bgStrokeColor(v) {
+        if (this.bgStrokeColor !== v) {
+            this._bgStrokeColor = v;
+            this.redraw();
+        }
+    }
+    get bgStrokeSize() {
+        return this._bgStrokeSize;
+    }
+    set bgStrokeSize(v) {
+        if (this.bgStrokeSize !== v) {
+            this._bgStrokeSize = v;
             this.redraw();
         }
     }
@@ -220,9 +293,9 @@ export class TextImage extends TypedEventBase {
         }
     }
     draw(g, x, y) {
-        if (this._canvas.width > 0
-            && this._canvas.height > 0) {
-            g.drawImage(this._canvas, x, y, this.width, this.height);
+        if (this.canvas.width > 0
+            && this.canvas.height > 0) {
+            g.drawImage(this.canvas, x, y, this.width, this.height);
         }
     }
     split(value) {
@@ -239,136 +312,157 @@ export class TextImage extends TypedEventBase {
                 .split('\n');
         }
     }
-    redraw() {
-        this._g.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    unfreeze() {
+        this._dimensionsFrozen = false;
+    }
+    onRedraw() {
+        this.g.clearRect(0, 0, this.canvas.width, this.canvas.height);
         if (this.fontFamily
             && this.fontSize
-            && (this.fillColor || (this.strokeColor && this.strokeSize))
+            && (this.textFillColor || (this.textStrokeColor && this.textStrokeSize))
             && this.value) {
-            const isVertical = this.textDirection && this.textDirection.indexOf("vertical") === 0;
-            const autoResize = this.minWidth != null
-                || this.maxWidth != null
-                || this.minHeight != null
-                || this.maxHeight != null;
-            const _targetMinWidth = ((this.minWidth || 0) - this.padding.right - this.padding.left) * this.scale;
-            const _targetMaxWidth = ((this.maxWidth || 4096) - this.padding.right - this.padding.left) * this.scale;
-            const _targetMinHeight = ((this.minHeight || 0) - this.padding.top - this.padding.bottom) * this.scale;
-            const _targetMaxHeight = ((this.maxHeight || 4096) - this.padding.top - this.padding.bottom) * this.scale;
-            const targetMinWidth = isVertical ? _targetMinHeight : _targetMinWidth;
-            const targetMaxWidth = isVertical ? _targetMaxHeight : _targetMaxWidth;
-            const targetMinHeight = isVertical ? _targetMinWidth : _targetMinHeight;
-            const targetMaxHeight = isVertical ? _targetMaxWidth : _targetMaxHeight;
-            const tried = [];
             const lines = this.split(this.value);
-            let dx = 0, trueWidth = 0, trueHeight = 0, tooBig = false, tooSmall = false, highFontSize = 10000, lowFontSize = 0, fontSize = clamp(this.fontSize * this.scale, lowFontSize, highFontSize), minFont = null, minFontDelta = Number.MAX_VALUE;
-            do {
-                const realFontSize = this.fontSize;
-                this._fontSize = fontSize;
-                const font = makeFont(this);
-                this._fontSize = realFontSize;
-                this._g.textAlign = "center";
-                this._g.textBaseline = "middle";
-                this._g.font = font;
-                trueWidth = 0;
-                trueHeight = 0;
-                for (const line of lines) {
-                    const metrics = this._g.measureText(line);
-                    trueWidth = Math.max(trueWidth, metrics.width);
-                    trueHeight += fontSize;
-                    if (isNumber(metrics.actualBoundingBoxLeft)
-                        && isNumber(metrics.actualBoundingBoxRight)
-                        && isNumber(metrics.actualBoundingBoxAscent)
-                        && isNumber(metrics.actualBoundingBoxDescent)) {
-                        if (!autoResize) {
-                            trueWidth = metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight;
-                            trueHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
-                            dx = (metrics.actualBoundingBoxLeft - trueWidth / 2) / 2;
+            const isVertical = this.textDirection && this.textDirection.indexOf("vertical") === 0;
+            if (this.trueWidth === null
+                || this.trueHeight === null
+                || this.dx === null
+                || this.trueFontSize === null
+                || !this._dimensionsFrozen) {
+                this._dimensionsFrozen = this._freezeDimensions;
+                const autoResize = this.minWidth != null
+                    || this.maxWidth != null
+                    || this.minHeight != null
+                    || this.maxHeight != null;
+                const _targetMinWidth = ((this.minWidth || 0) - this.padding.right - this.padding.left) * this.scale;
+                const _targetMaxWidth = ((this.maxWidth || 4096) - this.padding.right - this.padding.left) * this.scale;
+                const _targetMinHeight = ((this.minHeight || 0) - this.padding.top - this.padding.bottom) * this.scale;
+                const _targetMaxHeight = ((this.maxHeight || 4096) - this.padding.top - this.padding.bottom) * this.scale;
+                const targetMinWidth = isVertical ? _targetMinHeight : _targetMinWidth;
+                const targetMaxWidth = isVertical ? _targetMaxHeight : _targetMaxWidth;
+                const targetMinHeight = isVertical ? _targetMinWidth : _targetMinHeight;
+                const targetMaxHeight = isVertical ? _targetMaxWidth : _targetMaxHeight;
+                const tried = [];
+                this.trueWidth = 0;
+                this.trueHeight = 0;
+                this.dx = 0;
+                let tooBig = false, tooSmall = false, highFontSize = 10000, lowFontSize = 0;
+                this.trueFontSize = clamp(this.fontSize * this.scale, lowFontSize, highFontSize);
+                let minFont = null, minFontDelta = Number.MAX_VALUE;
+                do {
+                    const realFontSize = this.fontSize;
+                    this._fontSize = this.trueFontSize;
+                    const font = makeFont(this);
+                    this._fontSize = realFontSize;
+                    this.g.textAlign = "center";
+                    this.g.textBaseline = "middle";
+                    this.g.font = font;
+                    this.trueWidth = 0;
+                    this.trueHeight = 0;
+                    for (const line of lines) {
+                        const metrics = this.g.measureText(line);
+                        this.trueWidth = Math.max(this.trueWidth, metrics.width);
+                        this.trueHeight += this.trueFontSize;
+                        if (isNumber(metrics.actualBoundingBoxLeft)
+                            && isNumber(metrics.actualBoundingBoxRight)
+                            && isNumber(metrics.actualBoundingBoxAscent)
+                            && isNumber(metrics.actualBoundingBoxDescent)) {
+                            if (!autoResize) {
+                                this.trueWidth = metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight;
+                                this.trueHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
+                                this.dx = (metrics.actualBoundingBoxLeft - this.trueWidth / 2) / 2;
+                            }
                         }
                     }
-                }
+                    if (autoResize) {
+                        const dMinWidth = this.trueWidth - targetMinWidth;
+                        const dMaxWidth = this.trueWidth - targetMaxWidth;
+                        const dMinHeight = this.trueHeight - targetMinHeight;
+                        const dMaxHeight = this.trueHeight - targetMaxHeight;
+                        const mdMinWidth = Math.abs(dMinWidth);
+                        const mdMaxWidth = Math.abs(dMaxWidth);
+                        const mdMinHeight = Math.abs(dMinHeight);
+                        const mdMaxHeight = Math.abs(dMaxHeight);
+                        tooBig = dMaxWidth > 1 || dMaxHeight > 1;
+                        tooSmall = dMinWidth < -1 && dMinHeight < -1;
+                        const minDif = Math.min(mdMinWidth, Math.min(mdMaxWidth, Math.min(mdMinHeight, mdMaxHeight)));
+                        if (minDif < minFontDelta) {
+                            minFontDelta = minDif;
+                            minFont = this.g.font;
+                        }
+                        if ((tooBig || tooSmall)
+                            && tried.indexOf(this.g.font) > -1
+                            && minFont) {
+                            this.g.font = minFont;
+                            tooBig = false;
+                            tooSmall = false;
+                        }
+                        if (tooBig) {
+                            highFontSize = this.trueFontSize;
+                            this.trueFontSize = (lowFontSize + this.trueFontSize) / 2;
+                        }
+                        else if (tooSmall) {
+                            lowFontSize = this.trueFontSize;
+                            this.trueFontSize = (this.trueFontSize + highFontSize) / 2;
+                        }
+                    }
+                    tried.push(this.g.font);
+                } while (tooBig || tooSmall);
                 if (autoResize) {
-                    const dMinWidth = trueWidth - targetMinWidth;
-                    const dMaxWidth = trueWidth - targetMaxWidth;
-                    const dMinHeight = trueHeight - targetMinHeight;
-                    const dMaxHeight = trueHeight - targetMaxHeight;
-                    const mdMinWidth = Math.abs(dMinWidth);
-                    const mdMaxWidth = Math.abs(dMaxWidth);
-                    const mdMinHeight = Math.abs(dMinHeight);
-                    const mdMaxHeight = Math.abs(dMaxHeight);
-                    tooBig = dMaxWidth > 1 || dMaxHeight > 1;
-                    tooSmall = dMinWidth < -1 && dMinHeight < -1;
-                    const minDif = Math.min(mdMinWidth, Math.min(mdMaxWidth, Math.min(mdMinHeight, mdMaxHeight)));
-                    if (minDif < minFontDelta) {
-                        minFontDelta = minDif;
-                        minFont = this._g.font;
+                    if (this.trueWidth < targetMinWidth) {
+                        this.trueWidth = targetMinWidth;
                     }
-                    if ((tooBig || tooSmall)
-                        && tried.indexOf(this._g.font) > -1
-                        && minFont) {
-                        this._g.font = minFont;
-                        tooBig = false;
-                        tooSmall = false;
+                    else if (this.trueWidth > targetMaxWidth) {
+                        this.trueWidth = targetMaxWidth;
                     }
-                    if (tooBig) {
-                        highFontSize = fontSize;
-                        fontSize = (lowFontSize + fontSize) / 2;
+                    if (this.trueHeight < targetMinHeight) {
+                        this.trueHeight = targetMinHeight;
                     }
-                    else if (tooSmall) {
-                        lowFontSize = fontSize;
-                        fontSize = (fontSize + highFontSize) / 2;
+                    else if (this.trueHeight > targetMaxHeight) {
+                        this.trueHeight = targetMaxHeight;
                     }
                 }
-                tried.push(this._g.font);
-            } while (tooBig || tooSmall);
-            if (autoResize) {
-                if (trueWidth < targetMinWidth) {
-                    trueWidth = targetMinWidth;
+                const newW = this.trueWidth + this.scale * (this.padding.right + this.padding.left);
+                const newH = this.trueHeight + this.scale * (this.padding.top + this.padding.bottom);
+                try {
+                    setContextSize(this.g, newW, newH);
                 }
-                else if (trueWidth > targetMaxWidth) {
-                    trueWidth = targetMaxWidth;
-                }
-                if (trueHeight < targetMinHeight) {
-                    trueHeight = targetMinHeight;
-                }
-                else if (trueHeight > targetMaxHeight) {
-                    trueHeight = targetMaxHeight;
+                catch (exp) {
+                    console.error(exp);
+                    throw exp;
                 }
             }
-            const newW = trueWidth + this.scale * (this.padding.right + this.padding.left);
-            const newH = trueHeight + this.scale * (this.padding.top + this.padding.bottom);
-            try {
-                setContextSize(this._g, newW, newH);
-            }
-            catch (exp) {
-                console.error(exp);
-                throw exp;
-            }
-            if (this.bgColor) {
-                this._g.fillStyle = this.bgColor;
-                this._g.fillRect(0, 0, this.canvas.width, this.canvas.height);
+            if (this.bgFillColor) {
+                this.g.fillStyle = this.bgFillColor;
+                this.g.fillRect(0, 0, this.canvas.width, this.canvas.height);
             }
             else {
-                this._g.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                this.g.clearRect(0, 0, this.canvas.width, this.canvas.height);
             }
-            if (this.strokeColor && this.strokeSize) {
-                this._g.lineWidth = this.strokeSize * this.scale;
-                this._g.strokeStyle = this.strokeColor;
+            if (this.textStrokeColor && this.textStrokeSize) {
+                this.g.lineWidth = this.textStrokeSize * this.scale;
+                this.g.strokeStyle = this.textStrokeColor;
             }
-            if (this.fillColor) {
-                this._g.fillStyle = this.fillColor;
+            if (this.textFillColor) {
+                this.g.fillStyle = this.textFillColor;
             }
             const di = 0.5 * (lines.length - 1);
             for (let i = 0; i < lines.length; ++i) {
                 const line = lines[i];
-                const dy = (i - di) * fontSize;
-                const x = dx + this.canvas.width / 2;
-                const y = dy + this.canvas.height / 2;
-                if (this.strokeColor && this.strokeSize) {
-                    this._g.strokeText(line, x, y);
+                const dy = (i - di) * this.trueFontSize;
+                const x = this.dx + this.trueWidth / 2 + this.scale * this.padding.left;
+                const y = dy + this.trueHeight / 2 + this.scale * this.padding.top;
+                if (this.textStrokeColor && this.textStrokeSize) {
+                    this.g.strokeText(line, x, y);
                 }
-                if (this.fillColor) {
-                    this._g.fillText(line, x, y);
+                if (this.textFillColor) {
+                    this.g.fillText(line, x, y);
                 }
+            }
+            if (this.bgStrokeColor && this.bgStrokeSize) {
+                this.g.strokeStyle = this.bgStrokeColor;
+                this.g.lineWidth = this.bgStrokeSize * this.scale;
+                const s = this.bgStrokeSize / 2;
+                this.g.strokeRect(s, s, this.canvas.width - this.bgStrokeSize, this.canvas.height - this.bgStrokeSize);
             }
             if (isVertical) {
                 const canv = createUtilityCanvas(this.canvas.height, this.canvas.width);
@@ -384,14 +478,18 @@ export class TextImage extends TypedEventBase {
                     }
                     g.translate(-this.canvas.width / 2, -this.canvas.height / 2);
                     g.drawImage(this.canvas, 0, 0);
-                    setContextSize(this._g, canv.width, canv.height);
+                    setContextSize(this.g, canv.width, canv.height);
                 }
                 else {
                     console.warn("Couldn't rotate the TextImage");
                 }
-                this._g.drawImage(canv, 0, 0);
+                this.g.drawImage(canv, 0, 0);
             }
-            this.dispatchEvent(redrawnEvt);
+            return true;
+        }
+        else {
+            this.dispatchEvent(this.notReadyEvt);
+            return false;
         }
     }
 }

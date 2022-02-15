@@ -17,21 +17,6 @@
     function isNumber(obj) {
         return t(obj, "number", Number);
     }
-    function isObject(obj) {
-        return t(obj, "object", Object);
-    }
-    function isDate(obj) {
-        return obj instanceof Date;
-    }
-    function isArray(obj) {
-        return obj instanceof Array;
-    }
-    function isHTMLElement(obj) {
-        return obj instanceof HTMLElement;
-    }
-    function assertNever(x) {
-        throw new Error("Unexpected object: " + x);
-    }
     /**
      * Check a value to see if it is of a number type
      * and is not the special NaN value.
@@ -40,9 +25,44 @@
         return isNumber(obj)
             && !Number.isNaN(obj);
     }
+    function isObject(obj) {
+        return isDefined(obj)
+            && t(obj, "object", Object);
+    }
+    function isArray(obj) {
+        return obj instanceof Array;
+    }
+    function assertNever(x, msg) {
+        throw new Error((msg || "Unexpected object: ") + x);
+    }
     function isNullOrUndefined(obj) {
         return obj === null
             || obj === undefined;
+    }
+    function isDefined(obj) {
+        return !isNullOrUndefined(obj);
+    }
+    function isArrayBufferView(obj) {
+        return obj instanceof Uint8Array
+            || obj instanceof Uint8ClampedArray
+            || obj instanceof Int8Array
+            || obj instanceof Uint16Array
+            || obj instanceof Int16Array
+            || obj instanceof Uint32Array
+            || obj instanceof Int32Array
+            || obj instanceof BigUint64Array
+            || obj instanceof BigInt64Array
+            || obj instanceof Float32Array
+            || obj instanceof Float64Array;
+    }
+    function isXHRBodyInit(obj) {
+        return isString(obj)
+            || obj instanceof Blob
+            || obj instanceof FormData
+            || obj instanceof ArrayBuffer
+            || obj instanceof Document
+            || isArrayBufferView(obj)
+            || obj instanceof ReadableStream;
     }
 
     /**
@@ -57,81 +77,98 @@
         return arr.splice(idx, 1)[0];
     }
 
-    class EventBase {
-        constructor() {
-            this.listeners = new Map();
-            this.listenerOptions = new Map();
+    /**
+     * Removes a given item from an array, returning true if the item was removed.
+     */
+    function arrayRemove(arr, value) {
+        const idx = arr.indexOf(value);
+        if (idx > -1) {
+            arrayRemoveAt(arr, idx);
+            return true;
         }
-        addEventListener(type, callback, options) {
-            if (isFunction(callback)) {
-                let listeners = this.listeners.get(type);
-                if (!listeners) {
-                    listeners = new Array();
-                    this.listeners.set(type, listeners);
-                }
-                if (!listeners.find(c => c === callback)) {
-                    listeners.push(callback);
-                    if (options) {
-                        this.listenerOptions.set(callback, options);
-                    }
-                }
-            }
-        }
-        removeEventListener(type, callback) {
-            if (isFunction(callback)) {
-                const listeners = this.listeners.get(type);
-                if (listeners) {
-                    this.removeListener(listeners, callback);
-                }
-            }
-        }
-        removeListener(listeners, callback) {
-            const idx = listeners.findIndex(c => c === callback);
-            if (idx >= 0) {
-                arrayRemoveAt(listeners, idx);
-                if (this.listenerOptions.has(callback)) {
-                    this.listenerOptions.delete(callback);
-                }
-            }
-        }
-        dispatchEvent(evt) {
-            const listeners = this.listeners.get(evt.type);
-            if (listeners) {
-                for (const callback of listeners) {
-                    const options = this.listenerOptions.get(callback);
-                    if (options && options.once) {
-                        this.removeListener(listeners, callback);
-                    }
-                    callback.call(this, evt);
-                }
-            }
-            return !evt.defaultPrevented;
-        }
+        return false;
     }
-    class TypedEvent extends Event {
-        constructor(type) {
-            super(type);
-        }
+
+    function defaultKeySelector(obj) {
+        return obj;
     }
-    class TypedEventBase extends EventBase {
-        constructor() {
-            super(...arguments);
-            this.mappedCallbacks = new Map();
-        }
-        addEventListener(type, callback, options) {
-            let mappedCallback = this.mappedCallbacks.get(callback);
-            if (mappedCallback == null) {
-                mappedCallback = (evt) => callback(evt);
-                this.mappedCallbacks.set(callback, mappedCallback);
+    /**
+     * Performs a binary search on a list to find where the item should be inserted.
+     *
+     * If the item is found, the returned index will be an exact integer.
+     *
+     * If the item is not found, the returned insertion index will be 0.5 greater than
+     * the index at which it should be inserted.
+     */
+    function arrayBinarySearchByKey(arr, itemKey, keySelector) {
+        let left = 0;
+        let right = arr.length;
+        let idx = Math.floor((left + right) / 2);
+        let found = false;
+        while (left < right && idx < arr.length) {
+            const compareTo = arr[idx];
+            const compareToKey = isNullOrUndefined(compareTo)
+                ? null
+                : keySelector(compareTo);
+            if (isDefined(compareToKey)
+                && itemKey < compareToKey) {
+                right = idx;
             }
-            super.addEventListener(type, mappedCallback, options);
-        }
-        removeEventListener(type, callback) {
-            const mappedCallback = this.mappedCallbacks.get(callback);
-            if (mappedCallback) {
-                super.removeEventListener(type, mappedCallback);
+            else {
+                if (itemKey === compareToKey) {
+                    found = true;
+                }
+                left = idx + 1;
             }
+            idx = Math.floor((left + right) / 2);
         }
+        if (!found) {
+            idx += 0.5;
+        }
+        return idx;
+    }
+    /**
+     * Performs a binary search on a list to find where the item should be inserted.
+     *
+     * If the item is found, the returned index will be an exact integer.
+     *
+     * If the item is not found, the returned insertion index will be 0.5 greater than
+     * the index at which it should be inserted.
+     */
+    function arrayBinarySearch(arr, item, keySelector) {
+        keySelector = keySelector || defaultKeySelector;
+        const itemKey = keySelector(item);
+        return arrayBinarySearchByKey(arr, itemKey, keySelector);
+    }
+
+    /**
+     * Inserts an item at the given index into an array.
+     * @param arr
+     * @param item
+     * @param idx
+     */
+    function arrayInsertAt(arr, item, idx) {
+        arr.splice(idx, 0, item);
+    }
+
+    function arraySortedInsert(arr, item, keySelector, allowDuplicates) {
+        let ks;
+        if (isFunction(keySelector)) {
+            ks = keySelector;
+        }
+        else if (isBoolean(keySelector)) {
+            allowDuplicates = keySelector;
+        }
+        if (isNullOrUndefined(allowDuplicates)) {
+            allowDuplicates = true;
+        }
+        let idx = arrayBinarySearch(arr, item, ks);
+        const found = (idx % 1) === 0;
+        idx = idx | 0;
+        if (!found || allowDuplicates) {
+            arrayInsertAt(arr, item, idx);
+        }
+        return idx;
     }
 
     function add(a, b) {
@@ -147,20 +184,17 @@
             timeout = rejectEvt;
             rejectEvt = undefined;
         }
-        const hasResolveEvt = isString(resolveEvt);
-        const hasRejectEvt = isString(rejectEvt);
         const hasTimeout = timeout != null;
         return new Promise((resolve, reject) => {
-            if (hasResolveEvt) {
+            const remove = () => {
+                target.removeEventListener(resolveEvt, resolve);
+            };
+            resolve = add(remove, resolve);
+            reject = add(remove, reject);
+            if (isString(rejectEvt)) {
+                const rejectEvt2 = rejectEvt;
                 const remove = () => {
-                    target.removeEventListener(resolveEvt, resolve);
-                };
-                resolve = add(remove, resolve);
-                reject = add(remove, reject);
-            }
-            if (hasRejectEvt) {
-                const remove = () => {
-                    target.removeEventListener(rejectEvt, reject);
+                    target.removeEventListener(rejectEvt2, reject);
                 };
                 resolve = add(remove, resolve);
                 reject = add(remove, reject);
@@ -170,10 +204,8 @@
                 resolve = add(cancel, resolve);
                 reject = add(cancel, reject);
             }
-            if (hasResolveEvt) {
-                target.addEventListener(resolveEvt, resolve);
-            }
-            if (hasRejectEvt) {
+            target.addEventListener(resolveEvt, resolve);
+            if (isString(rejectEvt)) {
                 target.addEventListener(rejectEvt, () => {
                     reject("Rejection event found");
                 });
@@ -190,972 +222,6 @@
                 }
             }, 100);
         });
-    }
-
-    /**
-     * A setter functor for HTML attributes.
-     **/
-    class Attr {
-        /**
-         * Creates a new setter functor for HTML Attributes
-         * @param key - the attribute name.
-         * @param value - the value to set for the attribute.
-         * @param tags - the HTML tags that support this attribute.
-         */
-        constructor(key, value, ...tags) {
-            this.key = key;
-            this.value = value;
-            this.tags = tags.map(t => t.toLocaleUpperCase());
-            Object.freeze(this);
-        }
-        /**
-         * Set the attribute value on an HTMLElement
-         * @param elem - the element on which to set the attribute.
-         */
-        apply(elem) {
-            if (isHTMLElement(elem)) {
-                const isValid = this.tags.length === 0
-                    || this.tags.indexOf(elem.tagName) > -1;
-                if (!isValid) {
-                    console.warn(`Element ${elem.tagName} does not support Attribute ${this.key}`);
-                }
-                else if (this.key === "style") {
-                    Object.assign(elem.style, this.value);
-                }
-                else if (this.key in elem) {
-                    elem[this.key] = this.value;
-                }
-                else if (this.value === false) {
-                    elem.removeAttribute(this.key);
-                }
-                else if (this.value === true) {
-                    elem.setAttribute(this.key, "");
-                }
-                else {
-                    elem.setAttribute(this.key, this.value);
-                }
-            }
-            else {
-                elem[this.key] = this.value;
-            }
-        }
-    }
-    /**
-     * The audio or video should play as soon as possible.
-      **/
-    function autoPlay(value) { return new Attr("autoplay", value, "audio", "video"); }
-    /**
-     * Indicates whether the browser should show playback controls to the user.
-      **/
-    function controls(value) { return new Attr("controls", value, "audio", "video"); }
-    /**
-     * Specifies the height of elements listed here. For all other elements, use the CSS height property.
-      **/
-    function height(value) { return new Attr("height", value, "canvas", "embed", "iframe", "img", "input", "object", "video"); }
-    /**
-     * Indicates whether the audio will be initially silenced on page load.
-      **/
-    function muted(value) { return new Attr("muted", value, "audio", "video"); }
-    /**
-     * Indicates that the media element should play automatically on iOS.
-      **/
-    function playsInline(value) { return new Attr("playsInline", value, "audio", "video"); }
-    /**
-     * The URL of the embeddable content.
-      **/
-    function src(value) { return new Attr("src", value, "audio", "embed", "iframe", "img", "input", "script", "source", "track", "video"); }
-    /**
-     * A MediaStream object to use as a source for an HTML video or audio element
-      **/
-    function srcObject(value) { return new Attr("srcObject", value, "audio", "video"); }
-    /**
-     * For the elements listed here, this establishes the element's width.
-      **/
-    function width(value) { return new Attr("width", value, "canvas", "embed", "iframe", "img", "input", "object", "video"); }
-    class CssPropSet {
-        constructor(...rest) {
-            this.set = new Map();
-            const set = (key, value) => {
-                if (value || isBoolean(value)) {
-                    this.set.set(key, value);
-                }
-                else if (this.set.has(key)) {
-                    this.set.delete(key);
-                }
-            };
-            for (const prop of rest) {
-                if (prop instanceof Attr) {
-                    const { key, value } = prop;
-                    set(key, value);
-                }
-                else {
-                    for (const [key, value] of prop.set.entries()) {
-                        set(key, value);
-                    }
-                }
-            }
-        }
-        /**
-         * Set the attribute value on an HTMLElement
-         * @param elem - the element on which to set the attribute.
-         */
-        apply(elem) {
-            const style = isHTMLElement(elem)
-                ? elem.style
-                : elem;
-            for (const prop of this.set.entries()) {
-                const [key, value] = prop;
-                style[key] = value;
-            }
-        }
-    }
-    /**
-     * Combine style properties.
-     **/
-    function styles(...rest) {
-        return new CssPropSet(...rest);
-    }
-    function display(v) { return new Attr("display", v); }
-    function fontFamily(v) { return new Attr("fontFamily", v); }
-    /**
-     * A selection of fonts for preferred monospace rendering.
-     **/
-    const monospaceFonts = "'Droid Sans Mono', 'Consolas', 'Lucida Console', 'Courier New', 'Courier', monospace";
-    /**
-     * A selection of fonts for preferred monospace rendering.
-     **/
-    const monospaceFamily = fontFamily(monospaceFonts);
-    /**
-     * A selection of fonts that should match whatever the user's operating system normally uses.
-     **/
-    const systemFonts = "-apple-system, '.SFNSText-Regular', 'San Francisco', 'Roboto', 'Segoe UI', 'Helvetica Neue', 'Lucida Grande', sans-serif";
-    /**
-     * A selection of fonts that should match whatever the user's operating system normally uses.
-     **/
-    const systemFamily = fontFamily(systemFonts);
-
-    function hasNode(obj) {
-        return !isNullOrUndefined(obj)
-            && !isString(obj)
-            && !isNumber(obj)
-            && !isBoolean(obj)
-            && !isDate(obj)
-            && "element" in obj
-            && obj.element instanceof Node;
-    }
-    /**
-     * Creates an HTML element for a given tag name.
-     *
-     * Boolean attributes that you want to default to true can be passed
-     * as just the attribute creating function,
-     *   e.g. `Audio(autoPlay)` vs `Audio(autoPlay(true))`
-     * @param name - the name of the tag
-     * @param rest - optional attributes, child elements, and text
-     * @returns
-     */
-    function tag(name, ...rest) {
-        let elem = null;
-        for (const attr of rest) {
-            if (attr instanceof Attr
-                && attr.key === "id") {
-                elem = document.getElementById(attr.value);
-                break;
-            }
-        }
-        if (elem == null) {
-            elem = document.createElement(name);
-        }
-        for (let x of rest) {
-            if (x != null) {
-                if (isString(x)
-                    || isNumber(x)
-                    || isBoolean(x)
-                    || x instanceof Date
-                    || x instanceof Node
-                    || hasNode(x)) {
-                    if (hasNode(x)) {
-                        x = x.element;
-                    }
-                    else if (!(x instanceof Node)) {
-                        x = document.createTextNode(x.toLocaleString());
-                    }
-                    elem.appendChild(x);
-                }
-                else {
-                    if (x instanceof Function) {
-                        x = x(true);
-                    }
-                    x.apply(elem);
-                }
-            }
-        }
-        return elem;
-    }
-    function Audio(...rest) { return tag("audio", ...rest); }
-    function Canvas(...rest) { return tag("canvas", ...rest); }
-    function Script(...rest) { return tag("script", ...rest); }
-
-    const hasOffscreenCanvas = "OffscreenCanvas" in globalThis;
-    const hasImageBitmap = "createImageBitmap" in globalThis;
-    const hasOffscreenCanvasRenderingContext2D = hasOffscreenCanvas && (function () {
-        try {
-            const canv = new OffscreenCanvas(1, 1);
-            const g = canv.getContext("2d");
-            return g != null;
-        }
-        catch (exp) {
-            return false;
-        }
-    })();
-    const hasImageBitmapRenderingContext = hasImageBitmap && (function () {
-        try {
-            const canv = hasOffscreenCanvas
-                ? new OffscreenCanvas(1, 1)
-                : Canvas();
-            const g = canv.getContext("bitmaprenderer");
-            return g != null;
-        }
-        catch (exp) {
-            return false;
-        }
-    })();
-    function drawImageBitmapToCanvas2D(canv, img) {
-        const g = canv.getContext("2d");
-        if (isNullOrUndefined(g)) {
-            throw new Error("Could not create 2d context for canvas");
-        }
-        g.drawImage(img, 0, 0);
-    }
-    function copyImageBitmapToCanvas(canv, img) {
-        const g = canv.getContext("bitmaprenderer");
-        if (isNullOrUndefined(g)) {
-            throw new Error("Could not create bitmaprenderer context for canvas");
-        }
-        g.transferFromImageBitmap(img);
-    }
-    const drawImageBitmapToCanvas = hasImageBitmapRenderingContext
-        ? copyImageBitmapToCanvas
-        : drawImageBitmapToCanvas2D;
-    function createOffscreenCanvas(width, height) {
-        return new OffscreenCanvas(width, height);
-    }
-    function createCanvas(w, h) {
-        return Canvas(width(w), height(h));
-    }
-    const createUtilityCanvas = hasOffscreenCanvasRenderingContext2D
-        ? createOffscreenCanvas
-        : createCanvas;
-    function createOffscreenCanvasFromImageBitmap(img) {
-        const canv = createOffscreenCanvas(img.width, img.height);
-        drawImageBitmapToCanvas(canv, img);
-        return canv;
-    }
-    function createCanvasFromImageBitmap(img) {
-        const canv = createCanvas(img.width, img.height);
-        drawImageBitmapToCanvas(canv, img);
-        return canv;
-    }
-    const createUtilityCanvasFromImageBitmap = hasOffscreenCanvasRenderingContext2D
-        ? createOffscreenCanvasFromImageBitmap
-        : createCanvasFromImageBitmap;
-    function drawImageToCanvas(canv, img) {
-        const g = canv.getContext("2d");
-        if (isNullOrUndefined(g)) {
-            throw new Error("Could not create 2d context for canvas");
-        }
-        g.drawImage(img, 0, 0);
-    }
-    function createOffscreenCanvasFromImage(img) {
-        const canv = createOffscreenCanvas(img.width, img.height);
-        drawImageToCanvas(canv, img);
-        return canv;
-    }
-    function createCanvasFromImage(img) {
-        const canv = createCanvas(img.width, img.height);
-        drawImageToCanvas(canv, img);
-        return canv;
-    }
-    const createUtilityCanvasFromImage = hasOffscreenCanvasRenderingContext2D
-        ? createOffscreenCanvasFromImage
-        : createCanvasFromImage;
-
-    const Tau = 2 * Math.PI;
-    function angleClamp(v) {
-        return ((v % Tau) + Tau) % Tau;
-    }
-
-    function splitProgress(onProgress, weights) {
-        let subProgressWeights;
-        if (isNumber(weights)) {
-            subProgressWeights = new Array(weights);
-            for (let i = 0; i < subProgressWeights.length; ++i) {
-                subProgressWeights[i] = 1 / weights;
-            }
-        }
-        else {
-            subProgressWeights = weights;
-        }
-        let weightTotal = 0;
-        for (let i = 0; i < subProgressWeights.length; ++i) {
-            weightTotal += subProgressWeights[i];
-        }
-        const subProgressValues = new Array(subProgressWeights.length);
-        const subProgressCallbacks = new Array(subProgressWeights.length);
-        const start = performance.now();
-        const update = (i, subSoFar, subTotal, msg) => {
-            if (onProgress) {
-                subProgressValues[i] = subSoFar / subTotal;
-                let soFar = 0;
-                for (let j = 0; j < subProgressWeights.length; ++j) {
-                    soFar += subProgressValues[j] * subProgressWeights[j];
-                }
-                const end = performance.now();
-                const delta = end - start;
-                const est = start - end + delta * weightTotal / soFar;
-                onProgress(soFar, weightTotal, msg, est);
-            }
-        };
-        for (let i = 0; i < subProgressWeights.length; ++i) {
-            subProgressValues[i] = 0;
-            subProgressCallbacks[i] = (soFar, total, msg) => update(i, soFar, total, msg);
-        }
-        return subProgressCallbacks;
-    }
-
-    async function arrayProgress(onProgress, items, callback) {
-        const progs = splitProgress(onProgress, items.length);
-        const tasks = items.map((item, i) => callback(item, progs[i]));
-        return await Promise.all(tasks);
-    }
-
-    /**
-     * Force a value onto a range
-     */
-    function clamp(v, min, max) {
-        return Math.min(max, Math.max(min, v));
-    }
-
-    // performs a discrete convolution with a provided kernel
-    function kernelResample(read, write, filterSize, kernel) {
-        const { width, height, data } = read;
-        const readIndex = (x, y) => 4 * (y * width + x);
-        const twoFilterSize = 2 * filterSize;
-        const xMax = width - 1;
-        const yMax = height - 1;
-        const xKernel = new Array(4);
-        const yKernel = new Array(4);
-        return (xFrom, yFrom, to) => {
-            const xl = Math.floor(xFrom);
-            const yl = Math.floor(yFrom);
-            const xStart = xl - filterSize + 1;
-            const yStart = yl - filterSize + 1;
-            for (let i = 0; i < twoFilterSize; i++) {
-                xKernel[i] = kernel(xFrom - (xStart + i));
-                yKernel[i] = kernel(yFrom - (yStart + i));
-            }
-            for (let channel = 0; channel < 3; channel++) {
-                let q = 0;
-                for (let i = 0; i < twoFilterSize; i++) {
-                    const y = yStart + i;
-                    const yClamped = clamp(y, 0, yMax);
-                    let p = 0;
-                    for (let j = 0; j < twoFilterSize; j++) {
-                        const x = xStart + j;
-                        const index = readIndex(clamp(x, 0, xMax), yClamped);
-                        p += data[index + channel] * xKernel[j];
-                    }
-                    q += p * yKernel[i];
-                }
-                write.data[to + channel] = Math.round(q);
-            }
-        };
-    }
-
-    function copyPixelBicubic(read, write) {
-        const b = -0.5;
-        const kernel = (x) => {
-            x = Math.abs(x);
-            const x2 = x * x;
-            const x3 = x * x * x;
-            return x <= 1 ?
-                (b + 2) * x3 - (b + 3) * x2 + 1 :
-                b * x3 - 5 * b * x2 + 8 * b * x - 4 * b;
-        };
-        return kernelResample(read, write, 2, kernel);
-    }
-
-    function copyPixelBilinear(read, write) {
-        const { width, height, data } = read;
-        const readIndex = (x, y) => 4 * (y * width + x);
-        return (xFrom, yFrom, to) => {
-            const xl = clamp(Math.floor(xFrom), 0, width - 1);
-            const xr = clamp(Math.ceil(xFrom), 0, width - 1);
-            const xf = xFrom - xl;
-            const yl = clamp(Math.floor(yFrom), 0, height - 1);
-            const yr = clamp(Math.ceil(yFrom), 0, height - 1);
-            const yf = yFrom - yl;
-            const p00 = readIndex(xl, yl);
-            const p10 = readIndex(xr, yl);
-            const p01 = readIndex(xl, yr);
-            const p11 = readIndex(xr, yr);
-            for (let channel = 0; channel < 3; channel++) {
-                const p0 = data[p00 + channel] * (1 - xf) + data[p10 + channel] * xf;
-                const p1 = data[p01 + channel] * (1 - xf) + data[p11 + channel] * xf;
-                write.data[to + channel] = Math.ceil(p0 * (1 - yf) + p1 * yf);
-            }
-        };
-    }
-
-    function copyPixelLanczos(read, write) {
-        const filterSize = 5;
-        const kernel = (x) => {
-            if (x === 0) {
-                return 1;
-            }
-            else {
-                const xp = Math.PI * x;
-                return filterSize * Math.sin(xp) * Math.sin(xp / filterSize) / (xp * xp);
-            }
-        };
-        return kernelResample(read, write, filterSize, kernel);
-    }
-
-    function copyPixelNearest(read, write) {
-        const { width, height, data } = read;
-        const readIndex = (x, y) => 4 * (y * width + x);
-        return (xFrom, yFrom, to) => {
-            const nearest = readIndex(clamp(Math.round(xFrom), 0, width - 1), clamp(Math.round(yFrom), 0, height - 1));
-            for (let channel = 0; channel < 3; channel++) {
-                write.data[to + channel] = data[nearest + channel];
-            }
-        };
-    }
-
-    var CubeMapFace;
-    (function (CubeMapFace) {
-        CubeMapFace["PositiveZ"] = "pz";
-        CubeMapFace["NegativeZ"] = "nz";
-        CubeMapFace["PositiveX"] = "px";
-        CubeMapFace["NegativeX"] = "nx";
-        CubeMapFace["PositiveY"] = "py";
-        CubeMapFace["NegativeY"] = "ny";
-    })(CubeMapFace || (CubeMapFace = {}));
-    const CubeMapFaceNames = [
-        CubeMapFace.PositiveZ,
-        CubeMapFace.NegativeZ,
-        CubeMapFace.PositiveY,
-        CubeMapFace.NegativeY,
-        CubeMapFace.NegativeX,
-        CubeMapFace.PositiveX
-    ];
-
-    var InterpolationType;
-    (function (InterpolationType) {
-        InterpolationType["Bilinear"] = "bilinear";
-        InterpolationType["Bicubic"] = "bicubic";
-        InterpolationType["Lanczos"] = "lanczos";
-        InterpolationType["Nearest"] = "nearest";
-    })(InterpolationType || (InterpolationType = {}));
-
-    const rotations = new Map();
-    rotations.set(CubeMapFace.PositiveY, 3);
-    rotations.set(CubeMapFace.NegativeY, 1);
-    const faceOrienters = new Map([
-        [CubeMapFace.PositiveZ, (x, y) => {
-                return {
-                    x: -1,
-                    y: -x,
-                    z: -y
-                };
-            }],
-        [CubeMapFace.NegativeZ, (x, y) => {
-                return {
-                    x: 1,
-                    y: x,
-                    z: -y
-                };
-            }],
-        [CubeMapFace.PositiveX, (x, y) => {
-                return {
-                    x: x,
-                    y: -1,
-                    z: -y
-                };
-            }],
-        [CubeMapFace.NegativeX, (x, y) => {
-                return {
-                    x: -x,
-                    y: 1,
-                    z: -y
-                };
-            }],
-        [CubeMapFace.PositiveY, (x, y) => {
-                return {
-                    x: -y,
-                    y: -x,
-                    z: 1
-                };
-            }],
-        [CubeMapFace.NegativeY, (x, y) => {
-                return {
-                    x: y,
-                    y: -x,
-                    z: -1
-                };
-            }]
-    ]);
-    const pixelCopiers = new Map([
-        [InterpolationType.Bilinear, copyPixelBilinear],
-        [InterpolationType.Bicubic, copyPixelBicubic],
-        [InterpolationType.Lanczos, copyPixelLanczos],
-        [InterpolationType.Nearest, copyPixelNearest]
-    ]);
-    async function renderCanvasFace(readData, faceName, interpolation, maxWidth, onProgress) {
-        const faceOrienter = faceOrienters.get(faceName);
-        if (!faceOrienter) {
-            throw new Error("Invalid face name: " + faceName);
-        }
-        const pixelCopier = pixelCopiers.get(interpolation);
-        if (!pixelCopier) {
-            throw new Error("Invalid interpolation type: " + interpolation);
-        }
-        const faceWidth = Math.min(maxWidth || Number.MAX_VALUE, readData.width / 2);
-        const faceHeight = faceWidth;
-        const writeData = new ImageData(faceWidth, faceHeight);
-        if (!pixelCopiers.has(interpolation)) {
-            interpolation = InterpolationType.Nearest;
-        }
-        const copyPixels = pixelCopier(readData, writeData);
-        for (let y = 0; y < faceHeight; y++) {
-            if (isFunction(onProgress)) {
-                onProgress(y, faceHeight, faceName);
-            }
-            for (let x = 0; x < faceWidth; x++) {
-                const to = 4 * (y * faceWidth + x);
-                // fill alpha channel
-                writeData.data[to + 3] = 255;
-                // get position on cube face
-                // cube is centered at the origin with a side length of 2
-                const cube = faceOrienter((2 * (x + 0.5) / faceWidth - 1), (2 * (y + 0.5) / faceHeight - 1));
-                // project cube face onto unit sphere by converting cartesian to spherical coordinates
-                const r = Math.sqrt(cube.x * cube.x + cube.y * cube.y + cube.z * cube.z);
-                const lon = angleClamp(Math.atan2(cube.y, cube.x));
-                const lat = Math.acos(cube.z / r);
-                copyPixels(readData.width * lon / Math.PI / 2 - 0.5, readData.height * lat / Math.PI - 0.5, to);
-            }
-        }
-        const canv = createUtilityCanvas(faceWidth, faceHeight);
-        const g = canv.getContext("2d");
-        if (!g) {
-            throw new Error("Couldn't create a 2D canvas context");
-        }
-        g.putImageData(writeData, 0, 0);
-        if (rotations.has(faceName)) {
-            const rotation = rotations.get(faceName);
-            const halfW = faceWidth / 2;
-            const halfH = faceHeight / 2;
-            g.translate(halfW, halfH);
-            g.rotate(rotation * Math.PI / 2);
-            g.translate(-halfW, -halfH);
-            g.drawImage(canv, 0, 0);
-        }
-        if (isFunction(onProgress)) {
-            onProgress(faceHeight, faceHeight, faceName);
-        }
-        return canv;
-    }
-    async function renderImageBitmapFace(readData, faceName, interpolation, maxWidth, onProgress) {
-        const canv = await renderCanvasFace(readData, faceName, interpolation, maxWidth, onProgress);
-        return await createImageBitmap(canv);
-    }
-    async function renderCanvasFaces(renderFace, imgData, interpolation, maxWidth, onProgress) {
-        return await arrayProgress(onProgress, CubeMapFaceNames, (faceName, onProg) => renderFace(imgData, faceName, interpolation, maxWidth, onProg));
-    }
-    async function renderImageBitmapFaces(renderFace, imgData, interpolation, maxWidth, onProgress) {
-        return await arrayProgress(onProgress, CubeMapFaceNames, (faceName, onProg) => renderFace(imgData, faceName, interpolation, maxWidth, onProg));
-    }
-
-    function nextPowerOf2(v) {
-        return Math.pow(2, Math.ceil(Math.log2(v)));
-    }
-
-    function sliceImage(img, x, y, w1, h1, w2, h2, rotation) {
-        const canv = createUtilityCanvas(w2, h2);
-        const g = canv.getContext("2d");
-        if (!g) {
-            throw new Error("Couldn't create a 2D canvas context");
-        }
-        const halfW = w2 / 2;
-        const halfH = h2 / 2;
-        if (rotation > 0) {
-            if ((rotation % 2) === 0) {
-                g.translate(halfW, halfH);
-            }
-            else {
-                g.translate(halfH, halfW);
-            }
-            g.rotate(rotation * Math.PI / 2);
-            g.translate(-halfW, -halfH);
-        }
-        g.drawImage(img, x, y, w1, h1, 0, 0, w2, h2);
-        return canv;
-    }
-
-    var CubeMapFaceIndex;
-    (function (CubeMapFaceIndex) {
-        CubeMapFaceIndex[CubeMapFaceIndex["None"] = -1] = "None";
-        CubeMapFaceIndex[CubeMapFaceIndex["Left"] = 0] = "Left";
-        CubeMapFaceIndex[CubeMapFaceIndex["Right"] = 1] = "Right";
-        CubeMapFaceIndex[CubeMapFaceIndex["Up"] = 2] = "Up";
-        CubeMapFaceIndex[CubeMapFaceIndex["Down"] = 3] = "Down";
-        CubeMapFaceIndex[CubeMapFaceIndex["Back"] = 4] = "Back";
-        CubeMapFaceIndex[CubeMapFaceIndex["Front"] = 5] = "Front";
-    })(CubeMapFaceIndex || (CubeMapFaceIndex = {}));
-    const cubemapPattern = {
-        rows: 3,
-        columns: 4,
-        indices: [
-            [CubeMapFaceIndex.None, CubeMapFaceIndex.Up, CubeMapFaceIndex.None, CubeMapFaceIndex.None],
-            [CubeMapFaceIndex.Left, CubeMapFaceIndex.Front, CubeMapFaceIndex.Right, CubeMapFaceIndex.Back],
-            [CubeMapFaceIndex.None, CubeMapFaceIndex.Down, CubeMapFaceIndex.None, CubeMapFaceIndex.None]
-        ],
-        rotations: [
-            [0, 2, 0, 0],
-            [0, 0, 0, 0],
-            [0, 2, 0, 0]
-        ]
-    };
-    function sliceCubeMap(img) {
-        const w1 = img.width / cubemapPattern.columns;
-        const h1 = img.height / cubemapPattern.rows;
-        const w2 = nextPowerOf2(w1);
-        const h2 = nextPowerOf2(h1);
-        const images = new Array(6);
-        for (let r = 0; r < cubemapPattern.rows; ++r) {
-            const indices = cubemapPattern.indices[r];
-            const rotations = cubemapPattern.rotations[r];
-            for (let c = 0; c < cubemapPattern.columns; ++c) {
-                const index = indices[c];
-                if (index > -1) {
-                    images[index] = sliceImage(img, c * w1, r * h1, w1, h1, w2, h2, rotations[c]);
-                }
-            }
-        }
-        return images;
-    }
-
-    function createScript(file) {
-        const script = Script(src(file));
-        document.body.appendChild(script);
-    }
-
-    function isDisposable(obj) {
-        return isObject(obj)
-            && "dispose" in obj
-            && isFunction(obj.dispose);
-    }
-    function isClosable(obj) {
-        return isObject(obj)
-            && "close" in obj
-            && isFunction(obj.close);
-    }
-    function dispose(val) {
-        if (isDisposable(val)) {
-            val.dispose();
-        }
-        else if (isClosable(val)) {
-            val.close();
-        }
-    }
-    function using(val, thunk) {
-        try {
-            return thunk(val);
-        }
-        finally {
-            dispose(val);
-        }
-    }
-
-    class Fetcher {
-        constructor() {
-            this._getCanvas = hasImageBitmap
-                ? this.getCanvasViaImageBitmap
-                : this.getCanvasViaImage;
-            this._getImageData = hasImageBitmap
-                ? this.getImageDataViaImageBitmap
-                : this.getImageDataViaImage;
-            this._getCubes = hasImageBitmap
-                ? this.getCubesViaImageBitmaps
-                : this.getCubesViaImage;
-            this._getEquiMaps = hasImageBitmap
-                ? this.getEquiMapViaImageBitmaps
-                : this.getEquiMapViaImage;
-        }
-        async getCanvas(path, onProgress) {
-            return await this._getCanvas(path, onProgress);
-        }
-        async getImageData(path, onProgress) {
-            return await this._getImageData(path, onProgress);
-        }
-        async getCubes(path, onProgress) {
-            return await this._getCubes(path, onProgress);
-        }
-        async getEquiMaps(path, interpolation, maxWidth, onProgress) {
-            return await this._getEquiMaps(path, interpolation, maxWidth, onProgress);
-        }
-        async readRequestResponse(path, request) {
-            const response = await request;
-            if (!response.ok) {
-                throw new Error(`[${response.status}] - ${response.statusText}. Path ${path}`);
-            }
-            return response;
-        }
-        async getResponse(path) {
-            return await this.readRequestResponse(path, fetch(path));
-        }
-        async postObjectForResponse(path, obj) {
-            return await this.readRequestResponse(path, fetch(path, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify(obj)
-            }));
-        }
-        async readResponseBuffer(path, response, onProgress) {
-            const contentType = response.headers.get("Content-Type");
-            if (!contentType) {
-                throw new Error("Server did not provide a content type");
-            }
-            let contentLength = 1;
-            const contentLengthStr = response.headers.get("Content-Length");
-            if (!contentLengthStr) {
-                console.warn(`Server did not provide a content length header. Path: ${path}`);
-            }
-            else {
-                contentLength = parseInt(contentLengthStr, 10);
-                if (!isGoodNumber(contentLength)) {
-                    console.warn(`Server did not provide a valid content length header. Value: ${contentLengthStr}, Path: ${path}`);
-                    contentLength = 1;
-                }
-            }
-            const hasContentLength = isGoodNumber(contentLength);
-            if (!hasContentLength) {
-                contentLength = 1;
-            }
-            if (!response.body) {
-                throw new Error("No response body!");
-            }
-            const reader = response.body.getReader();
-            const values = [];
-            let receivedLength = 0;
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) {
-                    break;
-                }
-                if (value) {
-                    values.push(value);
-                    receivedLength += value.length;
-                    if (onProgress) {
-                        onProgress(receivedLength, Math.max(receivedLength, contentLength), path);
-                    }
-                }
-            }
-            const buffer = new ArrayBuffer(receivedLength);
-            const array = new Uint8Array(buffer);
-            receivedLength = 0;
-            for (const value of values) {
-                array.set(value, receivedLength);
-                receivedLength += value.length;
-            }
-            if (onProgress) {
-                onProgress(1, 1, path);
-            }
-            return { buffer, contentType };
-        }
-        async getBuffer(path, onProgress) {
-            const response = await this.getResponse(path);
-            return await this.readResponseBuffer(path, response, onProgress);
-        }
-        async postObjectForBuffer(path, obj, onProgress) {
-            const response = await this.postObjectForResponse(path, obj);
-            return await this.readResponseBuffer(path, response, onProgress);
-        }
-        async getBlob(path, onProgress) {
-            const { buffer, contentType } = await this.getBuffer(path, onProgress);
-            return new Blob([buffer], { type: contentType });
-        }
-        async postObjectForBlob(path, obj, onProgress) {
-            const { buffer, contentType } = await this.postObjectForBuffer(path, obj, onProgress);
-            return new Blob([buffer], { type: contentType });
-        }
-        async getFile(path, onProgress) {
-            const blob = await this.getBlob(path, onProgress);
-            return URL.createObjectURL(blob);
-        }
-        async postObjectForFile(path, obj, onProgress) {
-            const blob = await this.postObjectForBlob(path, obj, onProgress);
-            return URL.createObjectURL(blob);
-        }
-        async readFileImage(file) {
-            const img = new Image();
-            img.src = file;
-            if (!img.complete) {
-                await once(img, "load", "error");
-            }
-            return img;
-        }
-        async getImageBitmap(path, onProgress) {
-            const blob = await this.getBlob(path, onProgress);
-            return await createImageBitmap(blob);
-        }
-        async getImage(path, onProgress) {
-            const file = await this.getFile(path, onProgress);
-            return await this.readFileImage(file);
-        }
-        async postObjectForImageBitmap(path, obj, onProgress) {
-            const blob = await this.postObjectForBlob(path, obj, onProgress);
-            return await createImageBitmap(blob);
-        }
-        async postObjectForImage(path, obj, onProgress) {
-            const file = await this.postObjectForFile(path, obj, onProgress);
-            return await this.readFileImage(file);
-        }
-        async getCanvasViaImageBitmap(path, onProgress) {
-            return using(await this.getImageBitmap(path, onProgress), (img) => {
-                return createUtilityCanvasFromImageBitmap(img);
-            });
-        }
-        async getCanvasViaImage(path, onProgress) {
-            const img = await this.getImage(path, onProgress);
-            return createUtilityCanvasFromImage(img);
-        }
-        readImageData(img) {
-            const canv = createUtilityCanvas(img.width, img.height);
-            const g = canv.getContext("2d");
-            if (!g) {
-                throw new Error("Couldn't create a 2D canvas context");
-            }
-            g.drawImage(img, 0, 0);
-            return g.getImageData(0, 0, canv.width, canv.height);
-        }
-        async getImageDataViaImageBitmap(path, onProgress) {
-            return using(await this.getImageBitmap(path, onProgress), (img) => {
-                return this.readImageData(img);
-            });
-        }
-        async getImageDataViaImage(path, onProgress) {
-            const img = await this.getImage(path, onProgress);
-            return this.readImageData(img);
-        }
-        async getCubesViaImageBitmaps(path, onProgress) {
-            const img = await this.getImageBitmap(path, onProgress);
-            const canvs = sliceCubeMap(img);
-            return await Promise.all(canvs.map((canv) => createImageBitmap(canv)));
-        }
-        async getCubesViaImage(path, onProgress) {
-            const img = await this.getImage(path, onProgress);
-            return sliceCubeMap(img);
-        }
-        async getEquiMapViaImageBitmaps(path, interpolation, maxWidth, onProgress) {
-            const splits = splitProgress(onProgress, [1, 6]);
-            const imgData = await this.getImageDataViaImageBitmap(path, splits.shift());
-            return await renderImageBitmapFaces(renderImageBitmapFace, imgData, interpolation, maxWidth, splits.shift());
-        }
-        async getEquiMapViaImage(path, interpolation, maxWidth, onProgress) {
-            const splits = splitProgress(onProgress, [1, 6]);
-            const imgData = await this.getImageDataViaImage(path, splits.shift());
-            return await renderCanvasFaces(renderCanvasFace, imgData, interpolation, maxWidth, splits.shift());
-        }
-        readBufferText(buffer) {
-            const decoder = new TextDecoder("utf-8");
-            const text = decoder.decode(buffer);
-            return text;
-        }
-        async getText(path, onProgress) {
-            const { buffer } = await this.getBuffer(path, onProgress);
-            return this.readBufferText(buffer);
-        }
-        async postObjectForText(path, obj, onProgress) {
-            const { buffer } = await this.postObjectForBuffer(path, obj, onProgress);
-            return this.readBufferText(buffer);
-        }
-        async getObject(path, onProgress) {
-            const text = await this.getText(path, onProgress);
-            return JSON.parse(text);
-        }
-        async postObjectForObject(path, obj, onProgress) {
-            const text = await this.postObjectForText(path, obj, onProgress);
-            return JSON.parse(text);
-        }
-        async postObject(path, obj) {
-            await this.postObjectForResponse(path, obj);
-        }
-        readTextXml(text) {
-            const parser = new DOMParser();
-            const xml = parser.parseFromString(text, "text/xml");
-            return xml.documentElement;
-        }
-        async getXml(path, onProgress) {
-            const text = await this.getText(path, onProgress);
-            return this.readTextXml(text);
-        }
-        async postObjectForXml(path, obj, onProgress) {
-            const text = await this.postObjectForText(path, obj, onProgress);
-            return this.readTextXml(text);
-        }
-        async loadScript(path, test, onProgress) {
-            if (!test()) {
-                const scriptLoadTask = waitFor(test);
-                const file = await this.getFile(path, onProgress);
-                createScript(file);
-                await scriptLoadTask;
-            }
-            else if (onProgress) {
-                onProgress(1, 1, "skip");
-            }
-        }
-        async renderImageBitmapFace(readData, faceName, interpolation, maxWidth, onProgress) {
-            return await renderImageBitmapFace(readData, faceName, interpolation, maxWidth, onProgress);
-        }
-    }
-
-    /**
-     * An Event class for tracking changes to audio activity.
-     **/
-    class AudioActivityEvent extends Event {
-        /** Creates a new "audioActivity" event */
-        constructor() {
-            super("audioActivity");
-            this.id = null;
-            this.isActive = false;
-            Object.seal(this);
-        }
-        /**
-         * Sets the current state of the event
-         * @param id - the user for which the activity changed
-         * @param isActive - the new state of the activity
-         */
-        set(id, isActive) {
-            this.id = id;
-            this.isActive = isActive;
-        }
-    }
-
-    var ConnectionState;
-    (function (ConnectionState) {
-        ConnectionState["Disconnected"] = "Disconnected";
-        ConnectionState["Connecting"] = "Connecting";
-        ConnectionState["Connected"] = "Connected";
-        ConnectionState["Disconnecting"] = "Disconnecting";
-    })(ConnectionState || (ConnectionState = {}));
-
-    /**
-     * Empties out an array, returning the items that were in the array.
-     */
-    function arrayClear(arr) {
-        return arr.splice(0);
     }
 
     /**
@@ -1389,64 +455,101 @@
         }
     }
 
-    /**
-     * Removes a given item from an array, returning true if the item was removed.
-     */
-    function arrayRemove(arr, value) {
-        const idx = arr.indexOf(value);
-        if (idx > -1) {
-            arrayRemoveAt(arr, idx);
+    var ConnectionState;
+    (function (ConnectionState) {
+        ConnectionState["Disconnected"] = "Disconnected";
+        ConnectionState["Connecting"] = "Connecting";
+        ConnectionState["Connected"] = "Connected";
+        ConnectionState["Disconnecting"] = "Disconnecting";
+    })(ConnectionState || (ConnectionState = {}));
+
+    class EventBase {
+        constructor() {
+            this.listeners = new Map();
+            this.listenerOptions = new Map();
+        }
+        addEventListener(type, callback, options) {
+            if (isFunction(callback)) {
+                let listeners = this.listeners.get(type);
+                if (!listeners) {
+                    listeners = new Array();
+                    this.listeners.set(type, listeners);
+                }
+                if (!listeners.find(c => c === callback)) {
+                    listeners.push(callback);
+                    if (options) {
+                        this.listenerOptions.set(callback, options);
+                    }
+                }
+            }
+        }
+        removeEventListener(type, callback) {
+            if (isFunction(callback)) {
+                const listeners = this.listeners.get(type);
+                if (listeners) {
+                    this.removeListener(listeners, callback);
+                }
+            }
+        }
+        removeListener(listeners, callback) {
+            const idx = listeners.findIndex(c => c === callback);
+            if (idx >= 0) {
+                arrayRemoveAt(listeners, idx);
+                if (this.listenerOptions.has(callback)) {
+                    this.listenerOptions.delete(callback);
+                }
+            }
+        }
+        dispatchEvent(evt) {
+            const listeners = this.listeners.get(evt.type);
+            if (listeners) {
+                for (const callback of listeners) {
+                    const options = this.listenerOptions.get(callback);
+                    if (isDefined(options)
+                        && !isBoolean(options)
+                        && options.once) {
+                        this.removeListener(listeners, callback);
+                    }
+                    callback.call(this, evt);
+                }
+            }
+            return !evt.defaultPrevented;
+        }
+    }
+    class TypedEvent extends Event {
+        constructor(type) {
+            super(type);
+        }
+    }
+    class TypedEventBase extends EventBase {
+        constructor() {
+            super(...arguments);
+            this.mappedCallbacks = new Map();
+        }
+        addEventListener(type, callback, options) {
+            if (this.checkAddEventListener(type, callback)) {
+                let mappedCallback = this.mappedCallbacks.get(callback);
+                if (mappedCallback == null) {
+                    mappedCallback = (evt) => callback(evt);
+                    this.mappedCallbacks.set(callback, mappedCallback);
+                }
+                super.addEventListener(type, mappedCallback, options);
+            }
+        }
+        checkAddEventListener(_type, _callback) {
             return true;
         }
-        return false;
-    }
-
-    /**
-     * Performs a binary search on a list to find where the item should be inserted.
-     *
-     * If the item is found, the returned index will be an exact integer.
-     *
-     * If the item is not found, the returned insertion index will be 0.5 greater than
-     * the index at which it should be inserted.
-     */
-    function arrayBinarySearch(arr, item) {
-        let left = 0;
-        let right = arr.length;
-        let idx = Math.floor((left + right) / 2);
-        let found = false;
-        while (left < right && idx < arr.length) {
-            const compareTo = arr[idx];
-            if (!isNullOrUndefined(compareTo)
-                && item < compareTo) {
-                right = idx;
+        removeEventListener(type, callback) {
+            const mappedCallback = this.mappedCallbacks.get(callback);
+            if (mappedCallback) {
+                super.removeEventListener(type, mappedCallback);
             }
-            else {
-                if (item === compareTo) {
-                    found = true;
-                }
-                left = idx + 1;
-            }
-            idx = Math.floor((left + right) / 2);
         }
-        if (!found) {
-            idx += 0.5;
+        dispatchEvent(evt) {
+            this.onDispatching(evt);
+            return super.dispatchEvent(evt);
         }
-        return idx;
-    }
-
-    /**
-     * Performs an insert operation that maintains the sort
-     * order of the array, returning the index at which the
-     * item was inserted.
-     */
-    function arraySortedInsert(arr, item, allowDuplicates = true) {
-        let idx = arrayBinarySearch(arr, item);
-        const found = (idx % 1) === 0;
-        idx = idx | 0;
-        if (!found || allowDuplicates) {
-            arr.splice(idx, 0, item);
-        }
-        return idx;
+        onDispatching(_evt) { }
     }
 
     function sleep(dt) {
@@ -1600,6 +703,68 @@
         }
     }
 
+    function splitProgress(onProgress, subProgressWeights) {
+        let weightTotal = 0;
+        for (let i = 0; i < subProgressWeights.length; ++i) {
+            weightTotal += subProgressWeights[i];
+        }
+        const subProgressValues = new Array(subProgressWeights.length);
+        const subProgressCallbacks = new Array(subProgressWeights.length);
+        const start = performance.now();
+        const update = (i, subSoFar, subTotal, msg) => {
+            if (onProgress) {
+                subProgressValues[i] = subSoFar / subTotal;
+                let soFar = 0;
+                for (let j = 0; j < subProgressWeights.length; ++j) {
+                    soFar += subProgressValues[j] * subProgressWeights[j];
+                }
+                const end = performance.now();
+                const delta = end - start;
+                const est = start - end + delta * weightTotal / soFar;
+                onProgress(soFar, weightTotal, msg, est);
+            }
+        };
+        for (let i = 0; i < subProgressWeights.length; ++i) {
+            subProgressValues[i] = 0;
+            subProgressCallbacks[i] = (soFar, total, msg) => update(i, soFar, total, msg);
+        }
+        return subProgressCallbacks;
+    }
+
+    /**
+     * Empties out an array, returning the items that were in the array.
+     */
+    function arrayClear(arr) {
+        return arr.splice(0);
+    }
+
+    function isDisposable(obj) {
+        return isObject(obj)
+            && "dispose" in obj
+            && isFunction(obj.dispose);
+    }
+    function isClosable(obj) {
+        return isObject(obj)
+            && "close" in obj
+            && isFunction(obj.close);
+    }
+    function dispose(val) {
+        if (isDisposable(val)) {
+            val.dispose();
+        }
+        else if (isClosable(val)) {
+            val.close();
+        }
+    }
+    function using(val, thunk) {
+        try {
+            return thunk(val);
+        }
+        finally {
+            dispose(val);
+        }
+    }
+
     /**
      * Scans through a series of filters to find an item that matches
      * any of the filters. The first item of the first filter that matches
@@ -1616,2276 +781,1167 @@
         return null;
     }
 
-    // NOTE: this list must be up-to-date with browsers listed in
-    // test/acceptance/useragentstrings.yml
-    const BROWSER_ALIASES_MAP = {
-      'Amazon Silk': 'amazon_silk',
-      'Android Browser': 'android',
-      Bada: 'bada',
-      BlackBerry: 'blackberry',
-      Chrome: 'chrome',
-      Chromium: 'chromium',
-      Electron: 'electron',
-      Epiphany: 'epiphany',
-      Firefox: 'firefox',
-      Focus: 'focus',
-      Generic: 'generic',
-      'Google Search': 'google_search',
-      Googlebot: 'googlebot',
-      'Internet Explorer': 'ie',
-      'K-Meleon': 'k_meleon',
-      Maxthon: 'maxthon',
-      'Microsoft Edge': 'edge',
-      'MZ Browser': 'mz',
-      'NAVER Whale Browser': 'naver',
-      Opera: 'opera',
-      'Opera Coast': 'opera_coast',
-      PhantomJS: 'phantomjs',
-      Puffin: 'puffin',
-      QupZilla: 'qupzilla',
-      QQ: 'qq',
-      QQLite: 'qqlite',
-      Safari: 'safari',
-      Sailfish: 'sailfish',
-      'Samsung Internet for Android': 'samsung_internet',
-      SeaMonkey: 'seamonkey',
-      Sleipnir: 'sleipnir',
-      Swing: 'swing',
-      Tizen: 'tizen',
-      'UC Browser': 'uc',
-      Vivaldi: 'vivaldi',
-      'WebOS Browser': 'webos',
-      WeChat: 'wechat',
-      'Yandex Browser': 'yandex',
-      Roku: 'roku',
-    };
-
-    const BROWSER_MAP = {
-      amazon_silk: 'Amazon Silk',
-      android: 'Android Browser',
-      bada: 'Bada',
-      blackberry: 'BlackBerry',
-      chrome: 'Chrome',
-      chromium: 'Chromium',
-      electron: 'Electron',
-      epiphany: 'Epiphany',
-      firefox: 'Firefox',
-      focus: 'Focus',
-      generic: 'Generic',
-      googlebot: 'Googlebot',
-      google_search: 'Google Search',
-      ie: 'Internet Explorer',
-      k_meleon: 'K-Meleon',
-      maxthon: 'Maxthon',
-      edge: 'Microsoft Edge',
-      mz: 'MZ Browser',
-      naver: 'NAVER Whale Browser',
-      opera: 'Opera',
-      opera_coast: 'Opera Coast',
-      phantomjs: 'PhantomJS',
-      puffin: 'Puffin',
-      qupzilla: 'QupZilla',
-      qq: 'QQ Browser',
-      qqlite: 'QQ Browser Lite',
-      safari: 'Safari',
-      sailfish: 'Sailfish',
-      samsung_internet: 'Samsung Internet for Android',
-      seamonkey: 'SeaMonkey',
-      sleipnir: 'Sleipnir',
-      swing: 'Swing',
-      tizen: 'Tizen',
-      uc: 'UC Browser',
-      vivaldi: 'Vivaldi',
-      webos: 'WebOS Browser',
-      wechat: 'WeChat',
-      yandex: 'Yandex Browser',
-    };
-
-    const PLATFORMS_MAP = {
-      tablet: 'tablet',
-      mobile: 'mobile',
-      desktop: 'desktop',
-      tv: 'tv',
-    };
-
-    const OS_MAP = {
-      WindowsPhone: 'Windows Phone',
-      Windows: 'Windows',
-      MacOS: 'macOS',
-      iOS: 'iOS',
-      Android: 'Android',
-      WebOS: 'WebOS',
-      BlackBerry: 'BlackBerry',
-      Bada: 'Bada',
-      Tizen: 'Tizen',
-      Linux: 'Linux',
-      ChromeOS: 'Chrome OS',
-      PlayStation4: 'PlayStation 4',
-      Roku: 'Roku',
-    };
-
-    const ENGINE_MAP = {
-      EdgeHTML: 'EdgeHTML',
-      Blink: 'Blink',
-      Trident: 'Trident',
-      Presto: 'Presto',
-      Gecko: 'Gecko',
-      WebKit: 'WebKit',
-    };
-
-    class Utils {
-      /**
-       * Get first matched item for a string
-       * @param {RegExp} regexp
-       * @param {String} ua
-       * @return {Array|{index: number, input: string}|*|boolean|string}
-       */
-      static getFirstMatch(regexp, ua) {
-        const match = ua.match(regexp);
-        return (match && match.length > 0 && match[1]) || '';
-      }
-
-      /**
-       * Get second matched item for a string
-       * @param regexp
-       * @param {String} ua
-       * @return {Array|{index: number, input: string}|*|boolean|string}
-       */
-      static getSecondMatch(regexp, ua) {
-        const match = ua.match(regexp);
-        return (match && match.length > 1 && match[2]) || '';
-      }
-
-      /**
-       * Match a regexp and return a constant or undefined
-       * @param {RegExp} regexp
-       * @param {String} ua
-       * @param {*} _const Any const that will be returned if regexp matches the string
-       * @return {*}
-       */
-      static matchAndReturnConst(regexp, ua, _const) {
-        if (regexp.test(ua)) {
-          return _const;
-        }
-        return void (0);
-      }
-
-      static getWindowsVersionName(version) {
-        switch (version) {
-          case 'NT': return 'NT';
-          case 'XP': return 'XP';
-          case 'NT 5.0': return '2000';
-          case 'NT 5.1': return 'XP';
-          case 'NT 5.2': return '2003';
-          case 'NT 6.0': return 'Vista';
-          case 'NT 6.1': return '7';
-          case 'NT 6.2': return '8';
-          case 'NT 6.3': return '8.1';
-          case 'NT 10.0': return '10';
-          default: return undefined;
-        }
-      }
-
-      /**
-       * Get macOS version name
-       *    10.5 - Leopard
-       *    10.6 - Snow Leopard
-       *    10.7 - Lion
-       *    10.8 - Mountain Lion
-       *    10.9 - Mavericks
-       *    10.10 - Yosemite
-       *    10.11 - El Capitan
-       *    10.12 - Sierra
-       *    10.13 - High Sierra
-       *    10.14 - Mojave
-       *    10.15 - Catalina
-       *
-       * @example
-       *   getMacOSVersionName("10.14") // 'Mojave'
-       *
-       * @param  {string} version
-       * @return {string} versionName
-       */
-      static getMacOSVersionName(version) {
-        const v = version.split('.').splice(0, 2).map(s => parseInt(s, 10) || 0);
-        v.push(0);
-        if (v[0] !== 10) return undefined;
-        switch (v[1]) {
-          case 5: return 'Leopard';
-          case 6: return 'Snow Leopard';
-          case 7: return 'Lion';
-          case 8: return 'Mountain Lion';
-          case 9: return 'Mavericks';
-          case 10: return 'Yosemite';
-          case 11: return 'El Capitan';
-          case 12: return 'Sierra';
-          case 13: return 'High Sierra';
-          case 14: return 'Mojave';
-          case 15: return 'Catalina';
-          default: return undefined;
-        }
-      }
-
-      /**
-       * Get Android version name
-       *    1.5 - Cupcake
-       *    1.6 - Donut
-       *    2.0 - Eclair
-       *    2.1 - Eclair
-       *    2.2 - Froyo
-       *    2.x - Gingerbread
-       *    3.x - Honeycomb
-       *    4.0 - Ice Cream Sandwich
-       *    4.1 - Jelly Bean
-       *    4.4 - KitKat
-       *    5.x - Lollipop
-       *    6.x - Marshmallow
-       *    7.x - Nougat
-       *    8.x - Oreo
-       *    9.x - Pie
-       *
-       * @example
-       *   getAndroidVersionName("7.0") // 'Nougat'
-       *
-       * @param  {string} version
-       * @return {string} versionName
-       */
-      static getAndroidVersionName(version) {
-        const v = version.split('.').splice(0, 2).map(s => parseInt(s, 10) || 0);
-        v.push(0);
-        if (v[0] === 1 && v[1] < 5) return undefined;
-        if (v[0] === 1 && v[1] < 6) return 'Cupcake';
-        if (v[0] === 1 && v[1] >= 6) return 'Donut';
-        if (v[0] === 2 && v[1] < 2) return 'Eclair';
-        if (v[0] === 2 && v[1] === 2) return 'Froyo';
-        if (v[0] === 2 && v[1] > 2) return 'Gingerbread';
-        if (v[0] === 3) return 'Honeycomb';
-        if (v[0] === 4 && v[1] < 1) return 'Ice Cream Sandwich';
-        if (v[0] === 4 && v[1] < 4) return 'Jelly Bean';
-        if (v[0] === 4 && v[1] >= 4) return 'KitKat';
-        if (v[0] === 5) return 'Lollipop';
-        if (v[0] === 6) return 'Marshmallow';
-        if (v[0] === 7) return 'Nougat';
-        if (v[0] === 8) return 'Oreo';
-        if (v[0] === 9) return 'Pie';
-        return undefined;
-      }
-
-      /**
-       * Get version precisions count
-       *
-       * @example
-       *   getVersionPrecision("1.10.3") // 3
-       *
-       * @param  {string} version
-       * @return {number}
-       */
-      static getVersionPrecision(version) {
-        return version.split('.').length;
-      }
-
-      /**
-       * Calculate browser version weight
-       *
-       * @example
-       *   compareVersions('1.10.2.1',  '1.8.2.1.90')    // 1
-       *   compareVersions('1.010.2.1', '1.09.2.1.90');  // 1
-       *   compareVersions('1.10.2.1',  '1.10.2.1');     // 0
-       *   compareVersions('1.10.2.1',  '1.0800.2');     // -1
-       *   compareVersions('1.10.2.1',  '1.10',  true);  // 0
-       *
-       * @param {String} versionA versions versions to compare
-       * @param {String} versionB versions versions to compare
-       * @param {boolean} [isLoose] enable loose comparison
-       * @return {Number} comparison result: -1 when versionA is lower,
-       * 1 when versionA is bigger, 0 when both equal
-       */
-      /* eslint consistent-return: 1 */
-      static compareVersions(versionA, versionB, isLoose = false) {
-        // 1) get common precision for both versions, for example for "10.0" and "9" it should be 2
-        const versionAPrecision = Utils.getVersionPrecision(versionA);
-        const versionBPrecision = Utils.getVersionPrecision(versionB);
-
-        let precision = Math.max(versionAPrecision, versionBPrecision);
-        let lastPrecision = 0;
-
-        const chunks = Utils.map([versionA, versionB], (version) => {
-          const delta = precision - Utils.getVersionPrecision(version);
-
-          // 2) "9" -> "9.0" (for precision = 2)
-          const _version = version + new Array(delta + 1).join('.0');
-
-          // 3) "9.0" -> ["000000000"", "000000009"]
-          return Utils.map(_version.split('.'), chunk => new Array(20 - chunk.length).join('0') + chunk).reverse();
-        });
-
-        // adjust precision for loose comparison
-        if (isLoose) {
-          lastPrecision = precision - Math.min(versionAPrecision, versionBPrecision);
-        }
-
-        // iterate in reverse order by reversed chunks array
-        precision -= 1;
-        while (precision >= lastPrecision) {
-          // 4) compare: "000000009" > "000000010" = false (but "9" > "10" = true)
-          if (chunks[0][precision] > chunks[1][precision]) {
-            return 1;
-          }
-
-          if (chunks[0][precision] === chunks[1][precision]) {
-            if (precision === lastPrecision) {
-              // all version chunks are same
-              return 0;
+    function addLogger(obj, evtName) {
+        obj.addEventListener(evtName, (...rest) => {
+            if (loggingEnabled) {
+                console.log(">== CALLA ==<", evtName, ...rest);
             }
-
-            precision -= 1;
-          } else if (chunks[0][precision] < chunks[1][precision]) {
-            return -1;
-          }
+        });
+    }
+    function filterDeviceDuplicates(devices) {
+        const filtered = [];
+        for (let i = 0; i < devices.length; ++i) {
+            const a = devices[i];
+            let found = false;
+            for (let j = 0; j < filtered.length && !found; ++j) {
+                const b = filtered[j];
+                found = a.kind === b.kind && b.label.indexOf(a.label) > 0;
+            }
+            if (!found) {
+                filtered.push(a);
+            }
         }
-
-        return undefined;
-      }
-
-      /**
-       * Array::map polyfill
-       *
-       * @param  {Array} arr
-       * @param  {Function} iterator
-       * @return {Array}
-       */
-      static map(arr, iterator) {
-        const result = [];
-        let i;
-        if (Array.prototype.map) {
-          return Array.prototype.map.call(arr, iterator);
+        return filtered;
+    }
+    const PREFERRED_AUDIO_OUTPUT_ID_KEY = "calla:preferredAudioOutputID";
+    const PREFERRED_AUDIO_INPUT_ID_KEY = "calla:preferredAudioInputID";
+    const PREFERRED_VIDEO_INPUT_ID_KEY = "calla:preferredVideoInputID";
+    const DEFAULT_LOCAL_USER_ID = "local-user";
+    let loggingEnabled = window.location.hostname === "localhost"
+        || /\bdebug\b/.test(window.location.search);
+    class BaseTeleconferenceClient extends TypedEventBase {
+        constructor(fetcher, audio, needsAudioDevice = true, needsVideoDevice = false) {
+            super();
+            this.needsAudioDevice = needsAudioDevice;
+            this.needsVideoDevice = needsVideoDevice;
+            this.localUserID = null;
+            this.localUserName = null;
+            this.roomName = null;
+            this._connectionState = ConnectionState.Disconnected;
+            this._conferenceState = ConnectionState.Disconnected;
+            this.hasAudioPermission = false;
+            this.hasVideoPermission = false;
+            this.fetcher = fetcher;
+            this.audio = audio;
+            this.addEventListener("serverConnected", this.setConnectionState.bind(this, ConnectionState.Connected));
+            this.addEventListener("serverFailed", this.setConnectionState.bind(this, ConnectionState.Disconnected));
+            this.addEventListener("serverDisconnected", this.setConnectionState.bind(this, ConnectionState.Disconnected));
+            this.addEventListener("conferenceJoined", this.setConferenceState.bind(this, ConnectionState.Connected));
+            this.addEventListener("conferenceFailed", this.setConferenceState.bind(this, ConnectionState.Disconnected));
+            this.addEventListener("conferenceRestored", this.setConferenceState.bind(this, ConnectionState.Connected));
+            this.addEventListener("conferenceLeft", this.setConferenceState.bind(this, ConnectionState.Disconnected));
         }
-        for (i = 0; i < arr.length; i += 1) {
-          result.push(iterator(arr[i]));
+        toggleLogging() {
+            loggingEnabled = !loggingEnabled;
         }
-        return result;
-      }
-
-      /**
-       * Array::find polyfill
-       *
-       * @param  {Array} arr
-       * @param  {Function} predicate
-       * @return {Array}
-       */
-      static find(arr, predicate) {
-        let i;
-        let l;
-        if (Array.prototype.find) {
-          return Array.prototype.find.call(arr, predicate);
+        get connectionState() {
+            return this._connectionState;
         }
-        for (i = 0, l = arr.length; i < l; i += 1) {
-          const value = arr[i];
-          if (predicate(value, i)) {
-            return value;
-          }
+        setConnectionState(state) {
+            this._connectionState = state;
         }
-        return undefined;
-      }
-
-      /**
-       * Object::assign polyfill
-       *
-       * @param  {Object} obj
-       * @param  {Object} ...objs
-       * @return {Object}
-       */
-      static assign(obj, ...assigners) {
-        const result = obj;
-        let i;
-        let l;
-        if (Object.assign) {
-          return Object.assign(obj, ...assigners);
+        get conferenceState() {
+            return this._conferenceState;
         }
-        for (i = 0, l = assigners.length; i < l; i += 1) {
-          const assigner = assigners[i];
-          if (typeof assigner === 'object' && assigner !== null) {
-            const keys = Object.keys(assigner);
-            keys.forEach((key) => {
-              result[key] = assigner[key];
+        setConferenceState(state) {
+            this._conferenceState = state;
+        }
+        onDispatching(evt) {
+            if (evt instanceof CallaUserEvent
+                && (evt.id == null
+                    || evt.id === "local")) {
+                if (this.localUserID === DEFAULT_LOCAL_USER_ID) {
+                    evt.id = null;
+                }
+                else {
+                    evt.id = this.localUserID;
+                }
+            }
+        }
+        async getNext(evtName, userID) {
+            return new Promise((resolve) => {
+                const getter = (evt) => {
+                    if (evt instanceof CallaUserEvent
+                        && evt.id === userID) {
+                        this.removeEventListener(evtName, getter);
+                        resolve(evt);
+                    }
+                };
+                this.addEventListener(evtName, getter);
             });
-          }
         }
-        return obj;
-      }
-
-      /**
-       * Get short version/alias for a browser name
-       *
-       * @example
-       *   getBrowserAlias('Microsoft Edge') // edge
-       *
-       * @param  {string} browserName
-       * @return {string}
-       */
-      static getBrowserAlias(browserName) {
-        return BROWSER_ALIASES_MAP[browserName];
-      }
-
-      /**
-       * Get short version/alias for a browser name
-       *
-       * @example
-       *   getBrowserAlias('edge') // Microsoft Edge
-       *
-       * @param  {string} browserAlias
-       * @return {string}
-       */
-      static getBrowserTypeByAlias(browserAlias) {
-        return BROWSER_MAP[browserAlias] || '';
-      }
-    }
-
-    /**
-     * Browsers' descriptors
-     *
-     * The idea of descriptors is simple. You should know about them two simple things:
-     * 1. Every descriptor has a method or property called `test` and a `describe` method.
-     * 2. Order of descriptors is important.
-     *
-     * More details:
-     * 1. Method or property `test` serves as a way to detect whether the UA string
-     * matches some certain browser or not. The `describe` method helps to make a result
-     * object with params that show some browser-specific things: name, version, etc.
-     * 2. Order of descriptors is important because a Parser goes through them one by one
-     * in course. For example, if you insert Chrome's descriptor as the first one,
-     * more then a half of browsers will be described as Chrome, because they will pass
-     * the Chrome descriptor's test.
-     *
-     * Descriptor's `test` could be a property with an array of RegExps, where every RegExp
-     * will be applied to a UA string to test it whether it matches or not.
-     * If a descriptor has two or more regexps in the `test` array it tests them one by one
-     * with a logical sum operation. Parser stops if it has found any RegExp that matches the UA.
-     *
-     * Or `test` could be a method. In that case it gets a Parser instance and should
-     * return true/false to get the Parser know if this browser descriptor matches the UA or not.
-     */
-
-    const commonVersionIdentifier = /version\/(\d+(\.?_?\d+)+)/i;
-
-    const browsersList = [
-      /* Googlebot */
-      {
-        test: [/googlebot/i],
-        describe(ua) {
-          const browser = {
-            name: 'Googlebot',
-          };
-          const version = Utils.getFirstMatch(/googlebot\/(\d+(\.\d+))/i, ua) || Utils.getFirstMatch(commonVersionIdentifier, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-
-      /* Opera < 13.0 */
-      {
-        test: [/opera/i],
-        describe(ua) {
-          const browser = {
-            name: 'Opera',
-          };
-          const version = Utils.getFirstMatch(commonVersionIdentifier, ua) || Utils.getFirstMatch(/(?:opera)[\s/](\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-
-      /* Opera > 13.0 */
-      {
-        test: [/opr\/|opios/i],
-        describe(ua) {
-          const browser = {
-            name: 'Opera',
-          };
-          const version = Utils.getFirstMatch(/(?:opr|opios)[\s/](\S+)/i, ua) || Utils.getFirstMatch(commonVersionIdentifier, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/SamsungBrowser/i],
-        describe(ua) {
-          const browser = {
-            name: 'Samsung Internet for Android',
-          };
-          const version = Utils.getFirstMatch(commonVersionIdentifier, ua) || Utils.getFirstMatch(/(?:SamsungBrowser)[\s/](\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/Whale/i],
-        describe(ua) {
-          const browser = {
-            name: 'NAVER Whale Browser',
-          };
-          const version = Utils.getFirstMatch(commonVersionIdentifier, ua) || Utils.getFirstMatch(/(?:whale)[\s/](\d+(?:\.\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/MZBrowser/i],
-        describe(ua) {
-          const browser = {
-            name: 'MZ Browser',
-          };
-          const version = Utils.getFirstMatch(/(?:MZBrowser)[\s/](\d+(?:\.\d+)+)/i, ua) || Utils.getFirstMatch(commonVersionIdentifier, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/focus/i],
-        describe(ua) {
-          const browser = {
-            name: 'Focus',
-          };
-          const version = Utils.getFirstMatch(/(?:focus)[\s/](\d+(?:\.\d+)+)/i, ua) || Utils.getFirstMatch(commonVersionIdentifier, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/swing/i],
-        describe(ua) {
-          const browser = {
-            name: 'Swing',
-          };
-          const version = Utils.getFirstMatch(/(?:swing)[\s/](\d+(?:\.\d+)+)/i, ua) || Utils.getFirstMatch(commonVersionIdentifier, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/coast/i],
-        describe(ua) {
-          const browser = {
-            name: 'Opera Coast',
-          };
-          const version = Utils.getFirstMatch(commonVersionIdentifier, ua) || Utils.getFirstMatch(/(?:coast)[\s/](\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/opt\/\d+(?:.?_?\d+)+/i],
-        describe(ua) {
-          const browser = {
-            name: 'Opera Touch',
-          };
-          const version = Utils.getFirstMatch(/(?:opt)[\s/](\d+(\.?_?\d+)+)/i, ua) || Utils.getFirstMatch(commonVersionIdentifier, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/yabrowser/i],
-        describe(ua) {
-          const browser = {
-            name: 'Yandex Browser',
-          };
-          const version = Utils.getFirstMatch(/(?:yabrowser)[\s/](\d+(\.?_?\d+)+)/i, ua) || Utils.getFirstMatch(commonVersionIdentifier, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/ucbrowser/i],
-        describe(ua) {
-          const browser = {
-            name: 'UC Browser',
-          };
-          const version = Utils.getFirstMatch(commonVersionIdentifier, ua) || Utils.getFirstMatch(/(?:ucbrowser)[\s/](\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/Maxthon|mxios/i],
-        describe(ua) {
-          const browser = {
-            name: 'Maxthon',
-          };
-          const version = Utils.getFirstMatch(commonVersionIdentifier, ua) || Utils.getFirstMatch(/(?:Maxthon|mxios)[\s/](\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/epiphany/i],
-        describe(ua) {
-          const browser = {
-            name: 'Epiphany',
-          };
-          const version = Utils.getFirstMatch(commonVersionIdentifier, ua) || Utils.getFirstMatch(/(?:epiphany)[\s/](\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/puffin/i],
-        describe(ua) {
-          const browser = {
-            name: 'Puffin',
-          };
-          const version = Utils.getFirstMatch(commonVersionIdentifier, ua) || Utils.getFirstMatch(/(?:puffin)[\s/](\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/sleipnir/i],
-        describe(ua) {
-          const browser = {
-            name: 'Sleipnir',
-          };
-          const version = Utils.getFirstMatch(commonVersionIdentifier, ua) || Utils.getFirstMatch(/(?:sleipnir)[\s/](\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/k-meleon/i],
-        describe(ua) {
-          const browser = {
-            name: 'K-Meleon',
-          };
-          const version = Utils.getFirstMatch(commonVersionIdentifier, ua) || Utils.getFirstMatch(/(?:k-meleon)[\s/](\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/micromessenger/i],
-        describe(ua) {
-          const browser = {
-            name: 'WeChat',
-          };
-          const version = Utils.getFirstMatch(/(?:micromessenger)[\s/](\d+(\.?_?\d+)+)/i, ua) || Utils.getFirstMatch(commonVersionIdentifier, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/qqbrowser/i],
-        describe(ua) {
-          const browser = {
-            name: (/qqbrowserlite/i).test(ua) ? 'QQ Browser Lite' : 'QQ Browser',
-          };
-          const version = Utils.getFirstMatch(/(?:qqbrowserlite|qqbrowser)[/](\d+(\.?_?\d+)+)/i, ua) || Utils.getFirstMatch(commonVersionIdentifier, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/msie|trident/i],
-        describe(ua) {
-          const browser = {
-            name: 'Internet Explorer',
-          };
-          const version = Utils.getFirstMatch(/(?:msie |rv:)(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/\sedg\//i],
-        describe(ua) {
-          const browser = {
-            name: 'Microsoft Edge',
-          };
-
-          const version = Utils.getFirstMatch(/\sedg\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/edg([ea]|ios)/i],
-        describe(ua) {
-          const browser = {
-            name: 'Microsoft Edge',
-          };
-
-          const version = Utils.getSecondMatch(/edg([ea]|ios)\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/vivaldi/i],
-        describe(ua) {
-          const browser = {
-            name: 'Vivaldi',
-          };
-          const version = Utils.getFirstMatch(/vivaldi\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/seamonkey/i],
-        describe(ua) {
-          const browser = {
-            name: 'SeaMonkey',
-          };
-          const version = Utils.getFirstMatch(/seamonkey\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/sailfish/i],
-        describe(ua) {
-          const browser = {
-            name: 'Sailfish',
-          };
-
-          const version = Utils.getFirstMatch(/sailfish\s?browser\/(\d+(\.\d+)?)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/silk/i],
-        describe(ua) {
-          const browser = {
-            name: 'Amazon Silk',
-          };
-          const version = Utils.getFirstMatch(/silk\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/phantom/i],
-        describe(ua) {
-          const browser = {
-            name: 'PhantomJS',
-          };
-          const version = Utils.getFirstMatch(/phantomjs\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/slimerjs/i],
-        describe(ua) {
-          const browser = {
-            name: 'SlimerJS',
-          };
-          const version = Utils.getFirstMatch(/slimerjs\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/blackberry|\bbb\d+/i, /rim\stablet/i],
-        describe(ua) {
-          const browser = {
-            name: 'BlackBerry',
-          };
-          const version = Utils.getFirstMatch(commonVersionIdentifier, ua) || Utils.getFirstMatch(/blackberry[\d]+\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/(web|hpw)[o0]s/i],
-        describe(ua) {
-          const browser = {
-            name: 'WebOS Browser',
-          };
-          const version = Utils.getFirstMatch(commonVersionIdentifier, ua) || Utils.getFirstMatch(/w(?:eb)?[o0]sbrowser\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/bada/i],
-        describe(ua) {
-          const browser = {
-            name: 'Bada',
-          };
-          const version = Utils.getFirstMatch(/dolfin\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/tizen/i],
-        describe(ua) {
-          const browser = {
-            name: 'Tizen',
-          };
-          const version = Utils.getFirstMatch(/(?:tizen\s?)?browser\/(\d+(\.?_?\d+)+)/i, ua) || Utils.getFirstMatch(commonVersionIdentifier, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/qupzilla/i],
-        describe(ua) {
-          const browser = {
-            name: 'QupZilla',
-          };
-          const version = Utils.getFirstMatch(/(?:qupzilla)[\s/](\d+(\.?_?\d+)+)/i, ua) || Utils.getFirstMatch(commonVersionIdentifier, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/firefox|iceweasel|fxios/i],
-        describe(ua) {
-          const browser = {
-            name: 'Firefox',
-          };
-          const version = Utils.getFirstMatch(/(?:firefox|iceweasel|fxios)[\s/](\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/electron/i],
-        describe(ua) {
-          const browser = {
-            name: 'Electron',
-          };
-          const version = Utils.getFirstMatch(/(?:electron)\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/MiuiBrowser/i],
-        describe(ua) {
-          const browser = {
-            name: 'Miui',
-          };
-          const version = Utils.getFirstMatch(/(?:MiuiBrowser)[\s/](\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/chromium/i],
-        describe(ua) {
-          const browser = {
-            name: 'Chromium',
-          };
-          const version = Utils.getFirstMatch(/(?:chromium)[\s/](\d+(\.?_?\d+)+)/i, ua) || Utils.getFirstMatch(commonVersionIdentifier, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/chrome|crios|crmo/i],
-        describe(ua) {
-          const browser = {
-            name: 'Chrome',
-          };
-          const version = Utils.getFirstMatch(/(?:chrome|crios|crmo)\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-      {
-        test: [/GSA/i],
-        describe(ua) {
-          const browser = {
-            name: 'Google Search',
-          };
-          const version = Utils.getFirstMatch(/(?:GSA)\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-
-      /* Android Browser */
-      {
-        test(parser) {
-          const notLikeAndroid = !parser.test(/like android/i);
-          const butAndroid = parser.test(/android/i);
-          return notLikeAndroid && butAndroid;
-        },
-        describe(ua) {
-          const browser = {
-            name: 'Android Browser',
-          };
-          const version = Utils.getFirstMatch(commonVersionIdentifier, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-
-      /* PlayStation 4 */
-      {
-        test: [/playstation 4/i],
-        describe(ua) {
-          const browser = {
-            name: 'PlayStation 4',
-          };
-          const version = Utils.getFirstMatch(commonVersionIdentifier, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-
-      /* Safari */
-      {
-        test: [/safari|applewebkit/i],
-        describe(ua) {
-          const browser = {
-            name: 'Safari',
-          };
-          const version = Utils.getFirstMatch(commonVersionIdentifier, ua);
-
-          if (version) {
-            browser.version = version;
-          }
-
-          return browser;
-        },
-      },
-
-      /* Something else */
-      {
-        test: [/.*/i],
-        describe(ua) {
-          /* Here we try to make sure that there are explicit details about the device
-           * in order to decide what regexp exactly we want to apply
-           * (as there is a specific decision based on that conclusion)
-           */
-          const regexpWithoutDeviceSpec = /^(.*)\/(.*) /;
-          const regexpWithDeviceSpec = /^(.*)\/(.*)[ \t]\((.*)/;
-          const hasDeviceSpec = ua.search('\\(') !== -1;
-          const regexp = hasDeviceSpec ? regexpWithDeviceSpec : regexpWithoutDeviceSpec;
-          return {
-            name: Utils.getFirstMatch(regexp, ua),
-            version: Utils.getSecondMatch(regexp, ua),
-          };
-        },
-      },
-    ];
-
-    var osParsersList = [
-      /* Roku */
-      {
-        test: [/Roku\/DVP/],
-        describe(ua) {
-          const version = Utils.getFirstMatch(/Roku\/DVP-(\d+\.\d+)/i, ua);
-          return {
-            name: OS_MAP.Roku,
-            version,
-          };
-        },
-      },
-
-      /* Windows Phone */
-      {
-        test: [/windows phone/i],
-        describe(ua) {
-          const version = Utils.getFirstMatch(/windows phone (?:os)?\s?(\d+(\.\d+)*)/i, ua);
-          return {
-            name: OS_MAP.WindowsPhone,
-            version,
-          };
-        },
-      },
-
-      /* Windows */
-      {
-        test: [/windows /i],
-        describe(ua) {
-          const version = Utils.getFirstMatch(/Windows ((NT|XP)( \d\d?.\d)?)/i, ua);
-          const versionName = Utils.getWindowsVersionName(version);
-
-          return {
-            name: OS_MAP.Windows,
-            version,
-            versionName,
-          };
-        },
-      },
-
-      /* Firefox on iPad */
-      {
-        test: [/Macintosh(.*?) FxiOS(.*?)\//],
-        describe(ua) {
-          const result = {
-            name: OS_MAP.iOS,
-          };
-          const version = Utils.getSecondMatch(/(Version\/)(\d[\d.]+)/, ua);
-          if (version) {
-            result.version = version;
-          }
-          return result;
-        },
-      },
-
-      /* macOS */
-      {
-        test: [/macintosh/i],
-        describe(ua) {
-          const version = Utils.getFirstMatch(/mac os x (\d+(\.?_?\d+)+)/i, ua).replace(/[_\s]/g, '.');
-          const versionName = Utils.getMacOSVersionName(version);
-
-          const os = {
-            name: OS_MAP.MacOS,
-            version,
-          };
-          if (versionName) {
-            os.versionName = versionName;
-          }
-          return os;
-        },
-      },
-
-      /* iOS */
-      {
-        test: [/(ipod|iphone|ipad)/i],
-        describe(ua) {
-          const version = Utils.getFirstMatch(/os (\d+([_\s]\d+)*) like mac os x/i, ua).replace(/[_\s]/g, '.');
-
-          return {
-            name: OS_MAP.iOS,
-            version,
-          };
-        },
-      },
-
-      /* Android */
-      {
-        test(parser) {
-          const notLikeAndroid = !parser.test(/like android/i);
-          const butAndroid = parser.test(/android/i);
-          return notLikeAndroid && butAndroid;
-        },
-        describe(ua) {
-          const version = Utils.getFirstMatch(/android[\s/-](\d+(\.\d+)*)/i, ua);
-          const versionName = Utils.getAndroidVersionName(version);
-          const os = {
-            name: OS_MAP.Android,
-            version,
-          };
-          if (versionName) {
-            os.versionName = versionName;
-          }
-          return os;
-        },
-      },
-
-      /* WebOS */
-      {
-        test: [/(web|hpw)[o0]s/i],
-        describe(ua) {
-          const version = Utils.getFirstMatch(/(?:web|hpw)[o0]s\/(\d+(\.\d+)*)/i, ua);
-          const os = {
-            name: OS_MAP.WebOS,
-          };
-
-          if (version && version.length) {
-            os.version = version;
-          }
-          return os;
-        },
-      },
-
-      /* BlackBerry */
-      {
-        test: [/blackberry|\bbb\d+/i, /rim\stablet/i],
-        describe(ua) {
-          const version = Utils.getFirstMatch(/rim\stablet\sos\s(\d+(\.\d+)*)/i, ua)
-            || Utils.getFirstMatch(/blackberry\d+\/(\d+([_\s]\d+)*)/i, ua)
-            || Utils.getFirstMatch(/\bbb(\d+)/i, ua);
-
-          return {
-            name: OS_MAP.BlackBerry,
-            version,
-          };
-        },
-      },
-
-      /* Bada */
-      {
-        test: [/bada/i],
-        describe(ua) {
-          const version = Utils.getFirstMatch(/bada\/(\d+(\.\d+)*)/i, ua);
-
-          return {
-            name: OS_MAP.Bada,
-            version,
-          };
-        },
-      },
-
-      /* Tizen */
-      {
-        test: [/tizen/i],
-        describe(ua) {
-          const version = Utils.getFirstMatch(/tizen[/\s](\d+(\.\d+)*)/i, ua);
-
-          return {
-            name: OS_MAP.Tizen,
-            version,
-          };
-        },
-      },
-
-      /* Linux */
-      {
-        test: [/linux/i],
-        describe() {
-          return {
-            name: OS_MAP.Linux,
-          };
-        },
-      },
-
-      /* Chrome OS */
-      {
-        test: [/CrOS/],
-        describe() {
-          return {
-            name: OS_MAP.ChromeOS,
-          };
-        },
-      },
-
-      /* Playstation 4 */
-      {
-        test: [/PlayStation 4/],
-        describe(ua) {
-          const version = Utils.getFirstMatch(/PlayStation 4[/\s](\d+(\.\d+)*)/i, ua);
-          return {
-            name: OS_MAP.PlayStation4,
-            version,
-          };
-        },
-      },
-    ];
-
-    /*
-     * Tablets go first since usually they have more specific
-     * signs to detect.
-     */
-
-    var platformParsersList = [
-      /* Googlebot */
-      {
-        test: [/googlebot/i],
-        describe() {
-          return {
-            type: 'bot',
-            vendor: 'Google',
-          };
-        },
-      },
-
-      /* Huawei */
-      {
-        test: [/huawei/i],
-        describe(ua) {
-          const model = Utils.getFirstMatch(/(can-l01)/i, ua) && 'Nova';
-          const platform = {
-            type: PLATFORMS_MAP.mobile,
-            vendor: 'Huawei',
-          };
-          if (model) {
-            platform.model = model;
-          }
-          return platform;
-        },
-      },
-
-      /* Nexus Tablet */
-      {
-        test: [/nexus\s*(?:7|8|9|10).*/i],
-        describe() {
-          return {
-            type: PLATFORMS_MAP.tablet,
-            vendor: 'Nexus',
-          };
-        },
-      },
-
-      /* iPad */
-      {
-        test: [/ipad/i],
-        describe() {
-          return {
-            type: PLATFORMS_MAP.tablet,
-            vendor: 'Apple',
-            model: 'iPad',
-          };
-        },
-      },
-
-      /* Firefox on iPad */
-      {
-        test: [/Macintosh(.*?) FxiOS(.*?)\//],
-        describe() {
-          return {
-            type: PLATFORMS_MAP.tablet,
-            vendor: 'Apple',
-            model: 'iPad',
-          };
-        },
-      },
-
-      /* Amazon Kindle Fire */
-      {
-        test: [/kftt build/i],
-        describe() {
-          return {
-            type: PLATFORMS_MAP.tablet,
-            vendor: 'Amazon',
-            model: 'Kindle Fire HD 7',
-          };
-        },
-      },
-
-      /* Another Amazon Tablet with Silk */
-      {
-        test: [/silk/i],
-        describe() {
-          return {
-            type: PLATFORMS_MAP.tablet,
-            vendor: 'Amazon',
-          };
-        },
-      },
-
-      /* Tablet */
-      {
-        test: [/tablet(?! pc)/i],
-        describe() {
-          return {
-            type: PLATFORMS_MAP.tablet,
-          };
-        },
-      },
-
-      /* iPod/iPhone */
-      {
-        test(parser) {
-          const iDevice = parser.test(/ipod|iphone/i);
-          const likeIDevice = parser.test(/like (ipod|iphone)/i);
-          return iDevice && !likeIDevice;
-        },
-        describe(ua) {
-          const model = Utils.getFirstMatch(/(ipod|iphone)/i, ua);
-          return {
-            type: PLATFORMS_MAP.mobile,
-            vendor: 'Apple',
-            model,
-          };
-        },
-      },
-
-      /* Nexus Mobile */
-      {
-        test: [/nexus\s*[0-6].*/i, /galaxy nexus/i],
-        describe() {
-          return {
-            type: PLATFORMS_MAP.mobile,
-            vendor: 'Nexus',
-          };
-        },
-      },
-
-      /* Mobile */
-      {
-        test: [/[^-]mobi/i],
-        describe() {
-          return {
-            type: PLATFORMS_MAP.mobile,
-          };
-        },
-      },
-
-      /* BlackBerry */
-      {
-        test(parser) {
-          return parser.getBrowserName(true) === 'blackberry';
-        },
-        describe() {
-          return {
-            type: PLATFORMS_MAP.mobile,
-            vendor: 'BlackBerry',
-          };
-        },
-      },
-
-      /* Bada */
-      {
-        test(parser) {
-          return parser.getBrowserName(true) === 'bada';
-        },
-        describe() {
-          return {
-            type: PLATFORMS_MAP.mobile,
-          };
-        },
-      },
-
-      /* Windows Phone */
-      {
-        test(parser) {
-          return parser.getBrowserName() === 'windows phone';
-        },
-        describe() {
-          return {
-            type: PLATFORMS_MAP.mobile,
-            vendor: 'Microsoft',
-          };
-        },
-      },
-
-      /* Android Tablet */
-      {
-        test(parser) {
-          const osMajorVersion = Number(String(parser.getOSVersion()).split('.')[0]);
-          return parser.getOSName(true) === 'android' && (osMajorVersion >= 3);
-        },
-        describe() {
-          return {
-            type: PLATFORMS_MAP.tablet,
-          };
-        },
-      },
-
-      /* Android Mobile */
-      {
-        test(parser) {
-          return parser.getOSName(true) === 'android';
-        },
-        describe() {
-          return {
-            type: PLATFORMS_MAP.mobile,
-          };
-        },
-      },
-
-      /* desktop */
-      {
-        test(parser) {
-          return parser.getOSName(true) === 'macos';
-        },
-        describe() {
-          return {
-            type: PLATFORMS_MAP.desktop,
-            vendor: 'Apple',
-          };
-        },
-      },
-
-      /* Windows */
-      {
-        test(parser) {
-          return parser.getOSName(true) === 'windows';
-        },
-        describe() {
-          return {
-            type: PLATFORMS_MAP.desktop,
-          };
-        },
-      },
-
-      /* Linux */
-      {
-        test(parser) {
-          return parser.getOSName(true) === 'linux';
-        },
-        describe() {
-          return {
-            type: PLATFORMS_MAP.desktop,
-          };
-        },
-      },
-
-      /* PlayStation 4 */
-      {
-        test(parser) {
-          return parser.getOSName(true) === 'playstation 4';
-        },
-        describe() {
-          return {
-            type: PLATFORMS_MAP.tv,
-          };
-        },
-      },
-
-      /* Roku */
-      {
-        test(parser) {
-          return parser.getOSName(true) === 'roku';
-        },
-        describe() {
-          return {
-            type: PLATFORMS_MAP.tv,
-          };
-        },
-      },
-    ];
-
-    /*
-     * More specific goes first
-     */
-    var enginesParsersList = [
-      /* EdgeHTML */
-      {
-        test(parser) {
-          return parser.getBrowserName(true) === 'microsoft edge';
-        },
-        describe(ua) {
-          const isBlinkBased = /\sedg\//i.test(ua);
-
-          // return blink if it's blink-based one
-          if (isBlinkBased) {
+        get preferredAudioInputID() {
+            return localStorage.getItem(PREFERRED_AUDIO_INPUT_ID_KEY);
+        }
+        set preferredAudioInputID(v) {
+            localStorage.setItem(PREFERRED_AUDIO_INPUT_ID_KEY, v);
+        }
+        get preferredVideoInputID() {
+            return localStorage.getItem(PREFERRED_VIDEO_INPUT_ID_KEY);
+        }
+        set preferredVideoInputID(v) {
+            localStorage.setItem(PREFERRED_VIDEO_INPUT_ID_KEY, v);
+        }
+        async setPreferredDevices() {
+            await this.setPreferredAudioInput(true);
+            await this.setPreferredVideoInput(false);
+            await this.setPreferredAudioOutput(true);
+        }
+        async getPreferredAudioInput(allowAny) {
+            const devices = await this.getAudioInputDevices();
+            const device = arrayScan(devices, (d) => d.deviceId === this.preferredAudioInputID, (d) => d.deviceId === "communications", (d) => d.deviceId === "default", (d) => allowAny && d.deviceId.length > 0);
+            return device;
+        }
+        async setPreferredAudioInput(allowAny) {
+            const device = await this.getPreferredAudioInput(allowAny);
+            if (device) {
+                await this.setAudioInputDevice(device);
+            }
+        }
+        async getPreferredVideoInput(allowAny) {
+            const devices = await this.getVideoInputDevices();
+            const device = arrayScan(devices, (d) => d.deviceId === this.preferredVideoInputID, (d) => allowAny && d && /front/i.test(d.label), (d) => allowAny && d.deviceId.length > 0);
+            return device;
+        }
+        async setPreferredVideoInput(allowAny) {
+            const device = await this.getPreferredVideoInput(allowAny);
+            if (device) {
+                await this.setVideoInputDevice(device);
+            }
+        }
+        async getDevices() {
+            let devices = null;
+            for (let i = 0; i < 3; ++i) {
+                devices = await navigator.mediaDevices.enumerateDevices();
+                for (const device of devices) {
+                    if (device.deviceId.length > 0) {
+                        this.hasAudioPermission = this.hasAudioPermission || device.kind === "audioinput" && device.label.length > 0;
+                        this.hasVideoPermission = this.hasVideoPermission || device.kind === "videoinput" && device.label.length > 0;
+                    }
+                }
+                if (this.hasAudioPermission) {
+                    break;
+                }
+                try {
+                    await navigator.mediaDevices.getUserMedia({
+                        audio: this.needsAudioDevice && !this.hasAudioPermission,
+                        video: this.needsVideoDevice && !this.hasVideoPermission
+                    });
+                }
+                catch (exp) {
+                    console.warn(exp);
+                }
+            }
+            return devices || [];
+        }
+        async getMediaPermissions() {
+            await this.getDevices();
             return {
-              name: ENGINE_MAP.Blink,
+                audio: this.hasAudioPermission,
+                video: this.hasVideoPermission
             };
-          }
+        }
+        async getAvailableDevices(filterDuplicates = false) {
+            let devices = await this.getDevices();
+            if (filterDuplicates) {
+                devices = filterDeviceDuplicates(devices);
+            }
+            return {
+                audioOutput: canChangeAudioOutput ? devices.filter(d => d.kind === "audiooutput") : [],
+                audioInput: devices.filter(d => d.kind === "audioinput"),
+                videoInput: devices.filter(d => d.kind === "videoinput")
+            };
+        }
+        async getAudioInputDevices(filterDuplicates = false) {
+            const devices = await this.getAvailableDevices(filterDuplicates);
+            return devices && devices.audioInput || [];
+        }
+        async getVideoInputDevices(filterDuplicates = false) {
+            const devices = await this.getAvailableDevices(filterDuplicates);
+            return devices && devices.videoInput || [];
+        }
+        async setAudioOutputDevice(device) {
+            if (canChangeAudioOutput) {
+                this.preferredAudioOutputID = device && device.deviceId || null;
+            }
+        }
+        async getAudioOutputDevices(filterDuplicates = false) {
+            if (!canChangeAudioOutput) {
+                return [];
+            }
+            const devices = await this.getAvailableDevices(filterDuplicates);
+            return devices && devices.audioOutput || [];
+        }
+        async getCurrentAudioOutputDevice() {
+            if (!canChangeAudioOutput) {
+                return null;
+            }
+            const curId = this.audio.getAudioOutputDeviceID(), devices = await this.getAudioOutputDevices(), device = devices.filter((d) => curId != null && d.deviceId === curId
+                || curId == null && d.deviceId === this.preferredAudioOutputID);
+            if (device.length === 0) {
+                return null;
+            }
+            else {
+                return device[0];
+            }
+        }
+        get preferredAudioOutputID() {
+            return localStorage.getItem(PREFERRED_AUDIO_OUTPUT_ID_KEY);
+        }
+        set preferredAudioOutputID(v) {
+            localStorage.setItem(PREFERRED_AUDIO_OUTPUT_ID_KEY, v);
+        }
+        async getPreferredAudioOutput(allowAny) {
+            const devices = await this.getAudioOutputDevices();
+            const device = arrayScan(devices, (d) => d.deviceId === this.preferredAudioOutputID, (d) => d.deviceId === "communications", (d) => d.deviceId === "default", (d) => allowAny && d.deviceId.length > 0);
+            return device;
+        }
+        async setPreferredAudioOutput(allowAny) {
+            const device = await this.getPreferredAudioOutput(allowAny);
+            if (device) {
+                await this.setAudioOutputDevice(device);
+            }
+        }
+        async setAudioInputDevice(device) {
+            this.preferredAudioInputID = device && device.deviceId || null;
+        }
+        async setVideoInputDevice(device) {
+            this.preferredVideoInputID = device && device.deviceId || null;
+        }
+        async connect() {
+            this.setConnectionState(ConnectionState.Connecting);
+        }
+        async join(_roomName, _password) {
+            this.setConferenceState(ConnectionState.Connecting);
+        }
+        async leave() {
+            this.setConferenceState(ConnectionState.Disconnecting);
+        }
+        async disconnect() {
+            this.setConnectionState(ConnectionState.Disconnecting);
+        }
+    }
 
-          // otherwise match the version and return EdgeHTML
-          const version = Utils.getFirstMatch(/edge\/(\d+(\.?_?\d+)+)/i, ua);
-
-          return {
-            name: ENGINE_MAP.EdgeHTML,
-            version,
-          };
-        },
-      },
-
-      /* Trident */
-      {
-        test: [/trident/i],
-        describe(ua) {
-          const engine = {
-            name: ENGINE_MAP.Trident,
-          };
-
-          const version = Utils.getFirstMatch(/trident\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            engine.version = version;
-          }
-
-          return engine;
-        },
-      },
-
-      /* Presto */
-      {
-        test(parser) {
-          return parser.test(/presto/i);
-        },
-        describe(ua) {
-          const engine = {
-            name: ENGINE_MAP.Presto,
-          };
-
-          const version = Utils.getFirstMatch(/presto\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            engine.version = version;
-          }
-
-          return engine;
-        },
-      },
-
-      /* Gecko */
-      {
-        test(parser) {
-          const isGecko = parser.test(/gecko/i);
-          const likeGecko = parser.test(/like gecko/i);
-          return isGecko && !likeGecko;
-        },
-        describe(ua) {
-          const engine = {
-            name: ENGINE_MAP.Gecko,
-          };
-
-          const version = Utils.getFirstMatch(/gecko\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            engine.version = version;
-          }
-
-          return engine;
-        },
-      },
-
-      /* Blink */
-      {
-        test: [/(apple)?webkit\/537\.36/i],
-        describe() {
-          return {
-            name: ENGINE_MAP.Blink,
-          };
-        },
-      },
-
-      /* WebKit */
-      {
-        test: [/(apple)?webkit/i],
-        describe(ua) {
-          const engine = {
-            name: ENGINE_MAP.WebKit,
-          };
-
-          const version = Utils.getFirstMatch(/webkit\/(\d+(\.?_?\d+)+)/i, ua);
-
-          if (version) {
-            engine.version = version;
-          }
-
-          return engine;
-        },
-      },
-    ];
+    function encodeUserName(v) {
+        try {
+            return encodeURIComponent(v);
+        }
+        catch (exp) {
+            return v;
+        }
+    }
+    function decodeUserName(v) {
+        try {
+            return decodeURIComponent(v);
+        }
+        catch (exp) {
+            return v;
+        }
+    }
+    class JitsiTeleconferenceClient extends BaseTeleconferenceClient {
+        constructor(fetcher, audio, host, bridgeHost, bridgeMUC) {
+            super(fetcher, audio);
+            this.host = host;
+            this.bridgeHost = bridgeHost;
+            this.bridgeMUC = bridgeMUC;
+            this.usingDefaultMetadataClient = false;
+            this.connection = null;
+            this.conference = null;
+            this.tracks = new Map();
+            this.listenersForObjs = new Map();
+        }
+        _on(obj, evtName, handler) {
+            let objListeners = this.listenersForObjs.get(obj);
+            if (!objListeners) {
+                this.listenersForObjs.set(obj, objListeners = new Map());
+            }
+            let evtListeners = objListeners.get(evtName);
+            if (!evtListeners) {
+                objListeners.set(evtName, evtListeners = new Array());
+            }
+            evtListeners.push(handler);
+            obj.addEventListener(evtName, handler);
+        }
+        _off(obj) {
+            const objListeners = this.listenersForObjs.get(obj);
+            if (objListeners) {
+                this.listenersForObjs.delete(obj);
+                for (const [evtName, handlers] of objListeners.entries()) {
+                    for (const handler of handlers) {
+                        obj.removeEventListener(evtName, handler);
+                    }
+                    arrayClear(handlers);
+                }
+                objListeners.clear();
+            }
+        }
+        getDefaultMetadataClient() {
+            this.usingDefaultMetadataClient = true;
+            return new JitsiMetadataClient(this);
+        }
+        async connect() {
+            await super.connect();
+            const connectionEvents = JitsiMeetJS.events.connection;
+            this.connection = new JitsiMeetJS.JitsiConnection(null, null, {
+                hosts: {
+                    domain: this.bridgeHost,
+                    muc: this.bridgeMUC
+                },
+                serviceUrl: `https://${this.host}/http-bind`
+            });
+            for (const evtName of Object.values(connectionEvents)) {
+                addLogger(this.connection, evtName);
+            }
+            const onDisconnect = () => {
+                if (this.connection) {
+                    this._off(this.connection);
+                    this.connection = null;
+                }
+            };
+            const fwd = (evtName, EvtClass, extra) => {
+                this._on(this.connection, evtName, () => {
+                    this.dispatchEvent(new EvtClass());
+                    if (extra) {
+                        extra();
+                    }
+                });
+            };
+            fwd(connectionEvents.CONNECTION_ESTABLISHED, CallaTeleconferenceServerConnectedEvent);
+            fwd(connectionEvents.CONNECTION_DISCONNECTED, CallaTeleconferenceServerDisconnectedEvent, onDisconnect);
+            fwd(connectionEvents.CONNECTION_FAILED, CallaTeleconferenceServerFailedEvent, onDisconnect);
+            const connectTask = once(this.connection, connectionEvents.CONNECTION_ESTABLISHED);
+            this.connection.connect();
+            await connectTask;
+        }
+        async join(roomName, password) {
+            await super.join(roomName, password);
+            const isoRoomName = roomName.toLocaleLowerCase();
+            if (isoRoomName !== this.roomName) {
+                if (this.conference) {
+                    await this.leave();
+                }
+                this.roomName = isoRoomName;
+                this.conference = this.connection.initJitsiConference(this.roomName, {
+                    openBridgeChannel: this.usingDefaultMetadataClient,
+                    p2p: { enabled: false },
+                    startVideoMuted: true
+                });
+                const conferenceEvents = JitsiMeetJS.events.conference;
+                for (const evtName of Object.values(conferenceEvents)) {
+                    if (evtName !== "conference.audioLevelsChanged") {
+                        addLogger(this.conference, evtName);
+                    }
+                }
+                const fwd = (evtName, EvtClass, extra) => {
+                    this._on(this.conference, evtName, () => {
+                        this.dispatchEvent(new EvtClass());
+                        if (extra) {
+                            extra(evtName);
+                        }
+                    });
+                };
+                const onLeft = async (evtName) => {
+                    this.localUserID = DEFAULT_LOCAL_USER_ID;
+                    if (this.tracks.size > 0) {
+                        console.warn("><> CALLA <>< ---- there are leftover conference tracks");
+                        for (const userID of this.tracks.keys()) {
+                            await this.tryRemoveTrack(userID, StreamType.Video);
+                            await this.tryRemoveTrack(userID, StreamType.Audio);
+                            this.dispatchEvent(new CallaParticipantLeftEvent(userID));
+                        }
+                    }
+                    this.dispatchEvent(new CallaConferenceLeftEvent(this.localUserID));
+                    if (this.conference) {
+                        this._off(this.conference);
+                        this.conference = null;
+                    }
+                    console.info(`Left room '${roomName}'. Reason: ${evtName}.`);
+                };
+                fwd(conferenceEvents.CONFERENCE_ERROR, CallaConferenceFailedEvent, onLeft);
+                fwd(conferenceEvents.CONFERENCE_FAILED, CallaConferenceFailedEvent, onLeft);
+                fwd(conferenceEvents.CONNECTION_INTERRUPTED, CallaConferenceFailedEvent, onLeft);
+                this._on(this.conference, conferenceEvents.CONFERENCE_JOINED, async () => {
+                    const userID = this.conference.myUserId();
+                    if (userID) {
+                        this.localUserID = userID;
+                        this.dispatchEvent(new CallaConferenceJoinedEvent(userID, null));
+                    }
+                });
+                this._on(this.conference, conferenceEvents.CONFERENCE_LEFT, () => onLeft(conferenceEvents.CONFERENCE_LEFT));
+                this._on(this.conference, conferenceEvents.USER_JOINED, (id, jitsiUser) => {
+                    this.dispatchEvent(new CallaParticipantJoinedEvent(id, decodeUserName(jitsiUser.getDisplayName()), null));
+                });
+                this._on(this.conference, conferenceEvents.USER_LEFT, (id) => {
+                    this.dispatchEvent(new CallaParticipantLeftEvent(id));
+                });
+                this._on(this.conference, conferenceEvents.DISPLAY_NAME_CHANGED, (id, displayName) => {
+                    this.dispatchEvent(new CallaParticipantNameChangeEvent(id, decodeUserName(displayName)));
+                });
+                const onTrackMuteChanged = (track, muted) => {
+                    const userID = track.getParticipantId() || this.localUserID, trackKind = track.getType(), evt = trackKind === StreamType.Audio
+                        ? new CallaUserAudioMutedEvent(userID, muted)
+                        : new CallaUserVideoMutedEvent(userID, muted);
+                    this.dispatchEvent(evt);
+                };
+                this._on(this.conference, conferenceEvents.TRACK_ADDED, (track) => {
+                    const userID = track.getParticipantId() || this.localUserID, trackKind = track.getType(), trackAddedEvt = trackKind === StreamType.Audio
+                        ? new CallaAudioStreamAddedEvent(userID, track.stream)
+                        : new CallaVideoStreamAddedEvent(userID, track.stream);
+                    let userTracks = this.tracks.get(userID);
+                    if (!userTracks) {
+                        userTracks = new Map();
+                        this.tracks.set(userID, userTracks);
+                    }
+                    const curTrack = userTracks.get(trackKind);
+                    if (curTrack) {
+                        const trackRemovedEvt = StreamType.Audio
+                            ? new CallaAudioStreamRemovedEvent(userID, curTrack.stream)
+                            : new CallaVideoStreamRemovedEvent(userID, curTrack.stream);
+                        this.dispatchEvent(trackRemovedEvt);
+                        curTrack.dispose();
+                    }
+                    userTracks.set(trackKind, track);
+                    this.dispatchEvent(trackAddedEvt);
+                    track.addEventListener(JitsiMeetJS.events.track.TRACK_MUTE_CHANGED, (track) => {
+                        onTrackMuteChanged(track, track.isMuted());
+                    });
+                    onTrackMuteChanged(track, false);
+                });
+                this._on(this.conference, conferenceEvents.TRACK_REMOVED, (track) => {
+                    using(track, (_) => {
+                        const userID = track.getParticipantId() || this.localUserID, trackKind = track.getType(), trackRemovedEvt = StreamType.Audio
+                            ? new CallaAudioStreamRemovedEvent(userID, track.stream)
+                            : new CallaVideoStreamRemovedEvent(userID, track.stream);
+                        onTrackMuteChanged(track, true);
+                        this.dispatchEvent(trackRemovedEvt);
+                        const userTracks = this.tracks.get(userID);
+                        if (userTracks) {
+                            const curTrack = userTracks.get(trackKind);
+                            if (curTrack) {
+                                userTracks.delete(trackKind);
+                                if (userTracks.size === 0) {
+                                    this.tracks.delete(userID);
+                                }
+                                if (curTrack !== track) {
+                                    curTrack.dispose();
+                                }
+                            }
+                        }
+                    });
+                });
+                const joinTask = once(this, "conferenceJoined");
+                this.conference.join(password);
+                await joinTask;
+            }
+        }
+        async identify(userName) {
+            this.localUserName = userName;
+            this.conference.setDisplayName(encodeUserName(userName));
+        }
+        async tryRemoveTrack(userID, kind) {
+            const userTracks = this.tracks.get(userID);
+            const EvtClass = kind === StreamType.Video
+                ? CallaVideoStreamRemovedEvent
+                : CallaAudioStreamRemovedEvent;
+            if (userTracks) {
+                const track = userTracks.get(kind);
+                if (track) {
+                    this.dispatchEvent(new EvtClass(userID, track.stream));
+                    userTracks.delete(kind);
+                    try {
+                        if (this.conference && track.isLocal) {
+                            this.conference.removeTrack(track);
+                        }
+                    }
+                    catch (exp) {
+                        console.warn(exp);
+                    }
+                    finally {
+                        track.dispose();
+                    }
+                }
+                if (userTracks.size === 0) {
+                    this.tracks.delete(userID);
+                }
+            }
+        }
+        async leave() {
+            await super.leave();
+            try {
+                await this.tryRemoveTrack(this.localUserID, StreamType.Video);
+                await this.tryRemoveTrack(this.localUserID, StreamType.Audio);
+                const leaveTask = once(this, "conferenceLeft");
+                this.conference.leave();
+                await leaveTask;
+            }
+            catch (exp) {
+                console.warn("><> CALLA <>< ---- Failed to leave teleconference.", exp);
+            }
+        }
+        async disconnect() {
+            await super.disconnect();
+            if (this.conferenceState === ConnectionState.Connected) {
+                await this.leave();
+            }
+            const disconnectTask = once(this, "serverDisconnected");
+            this.connection.disconnect();
+            await disconnectTask;
+        }
+        userExists(id) {
+            return this.conference
+                && this.conference.participants
+                && id in this.conference.participants;
+        }
+        getUserNames() {
+            if (this.conference) {
+                return Object.keys(this.conference.participants)
+                    .map(k => [k, decodeUserName(this.conference.participants[k].getDisplayName())]);
+            }
+            else {
+                return [];
+            }
+        }
+        getCurrentMediaTrack(type) {
+            if (this.localUserID === DEFAULT_LOCAL_USER_ID) {
+                return null;
+            }
+            const userTracks = this.tracks.get(this.localUserID);
+            if (!userTracks) {
+                return null;
+            }
+            return userTracks.get(type);
+        }
+        async setAudioInputDevice(device) {
+            await super.setAudioInputDevice(device);
+            const cur = this.getCurrentMediaTrack(StreamType.Audio);
+            if (cur) {
+                const removeTask = this.getNext("audioRemoved", this.localUserID);
+                this.conference.removeTrack(cur);
+                await removeTask;
+            }
+            if (this.conference && this.preferredAudioInputID) {
+                const addTask = this.getNext("audioAdded", this.localUserID);
+                const tracks = await JitsiMeetJS.createLocalTracks({
+                    devices: ["audio"],
+                    micDeviceId: this.preferredAudioInputID,
+                    constraints: {
+                        autoGainControl: true,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+                for (const track of tracks) {
+                    this.conference.addTrack(track);
+                }
+                await addTask;
+            }
+        }
+        async setVideoInputDevice(device) {
+            await super.setVideoInputDevice(device);
+            const cur = this.getCurrentMediaTrack(StreamType.Video);
+            if (cur) {
+                const removeTask = this.getNext("videoRemoved", this.localUserID);
+                this.conference.removeTrack(cur);
+                await removeTask;
+            }
+            if (this.conference && this.preferredVideoInputID) {
+                const addTask = this.getNext("videoAdded", this.localUserID);
+                const tracks = await JitsiMeetJS.createLocalTracks({
+                    devices: ["video"],
+                    cameraDeviceId: this.preferredVideoInputID
+                });
+                for (const track of tracks) {
+                    this.conference.addTrack(track);
+                }
+                await addTask;
+            }
+        }
+        async getCurrentAudioInputDevice() {
+            const cur = this.getCurrentMediaTrack(StreamType.Audio), devices = await this.getAudioInputDevices(), device = devices.filter((d) => cur != null && d.deviceId === cur.getDeviceId()
+                || cur == null && d.deviceId === this.preferredAudioInputID);
+            if (device.length === 0) {
+                return null;
+            }
+            else {
+                return device[0];
+            }
+        }
+        async getCurrentVideoInputDevice() {
+            const cur = this.getCurrentMediaTrack(StreamType.Video), devices = await this.getVideoInputDevices(), device = devices.filter((d) => cur != null && d.deviceId === cur.getDeviceId()
+                || cur == null && d.deviceId === this.preferredVideoInputID);
+            if (device.length === 0) {
+                return null;
+            }
+            else {
+                return device[0];
+            }
+        }
+        async toggleAudioMuted() {
+            const changeTask = this.getNext("audioMuteStatusChanged", this.localUserID);
+            const cur = this.getCurrentMediaTrack(StreamType.Audio);
+            if (cur) {
+                const muted = cur.isMuted();
+                if (muted) {
+                    await cur.unmute();
+                }
+                else {
+                    await cur.mute();
+                }
+            }
+            else {
+                await this.setPreferredAudioInput(true);
+            }
+            const evt = await changeTask;
+            return evt.muted;
+        }
+        async toggleVideoMuted() {
+            const changeTask = this.getNext("videoMuteStatusChanged", this.localUserID);
+            const cur = this.getCurrentMediaTrack(StreamType.Video);
+            if (cur) {
+                await this.setVideoInputDevice(null);
+            }
+            else {
+                await this.setPreferredVideoInput(true);
+            }
+            const evt = await changeTask;
+            return evt.muted;
+        }
+        isMediaMuted(type) {
+            const cur = this.getCurrentMediaTrack(type);
+            return cur == null
+                || cur.isMuted();
+        }
+        async getAudioMuted() {
+            return this.isMediaMuted(StreamType.Audio);
+        }
+        async getVideoMuted() {
+            return this.isMediaMuted(StreamType.Video);
+        }
+    }
 
     /**
-     * The main class that arranges the whole parsing process.
-     */
-    class Parser {
-      /**
-       * Create instance of Parser
-       *
-       * @param {String} UA User-Agent string
-       * @param {Boolean} [skipParsing=false] parser can skip parsing in purpose of performance
-       * improvements if you need to make a more particular parsing
-       * like {@link Parser#parseBrowser} or {@link Parser#parsePlatform}
-       *
-       * @throw {Error} in case of empty UA String
-       *
-       * @constructor
-       */
-      constructor(UA, skipParsing = false) {
-        if (UA === void (0) || UA === null || UA === '') {
-          throw new Error("UserAgent parameter can't be empty");
-        }
-
-        this._ua = UA;
-
+     * A setter functor for HTML attributes.
+     **/
+    class Attr {
         /**
-         * @typedef ParsedResult
-         * @property {Object} browser
-         * @property {String|undefined} [browser.name]
-         * Browser name, like `"Chrome"` or `"Internet Explorer"`
-         * @property {String|undefined} [browser.version] Browser version as a String `"12.01.45334.10"`
-         * @property {Object} os
-         * @property {String|undefined} [os.name] OS name, like `"Windows"` or `"macOS"`
-         * @property {String|undefined} [os.version] OS version, like `"NT 5.1"` or `"10.11.1"`
-         * @property {String|undefined} [os.versionName] OS name, like `"XP"` or `"High Sierra"`
-         * @property {Object} platform
-         * @property {String|undefined} [platform.type]
-         * platform type, can be either `"desktop"`, `"tablet"` or `"mobile"`
-         * @property {String|undefined} [platform.vendor] Vendor of the device,
-         * like `"Apple"` or `"Samsung"`
-         * @property {String|undefined} [platform.model] Device model,
-         * like `"iPhone"` or `"Kindle Fire HD 7"`
-         * @property {Object} engine
-         * @property {String|undefined} [engine.name]
-         * Can be any of this: `WebKit`, `Blink`, `Gecko`, `Trident`, `Presto`, `EdgeHTML`
-         * @property {String|undefined} [engine.version] String version of the engine
+         * Creates a new setter functor for HTML Attributes
+         * @param key - the attribute name.
+         * @param value - the value to set for the attribute.
+         * @param tags - the HTML tags that support this attribute.
          */
-        this.parsedResult = {};
-
-        if (skipParsing !== true) {
-          this.parse();
+        constructor(key, value, bySetAttribute, ...tags) {
+            this.key = key;
+            this.value = value;
+            this.bySetAttribute = bySetAttribute;
+            this.tags = tags.map(t => t.toLocaleUpperCase());
+            Object.freeze(this);
         }
-      }
-
-      /**
-       * Get UserAgent string of current Parser instance
-       * @return {String} User-Agent String of the current <Parser> object
-       *
-       * @public
-       */
-      getUA() {
-        return this._ua;
-      }
-
-      /**
-       * Test a UA string for a regexp
-       * @param {RegExp} regex
-       * @return {Boolean}
-       */
-      test(regex) {
-        return regex.test(this._ua);
-      }
-
-      /**
-       * Get parsed browser object
-       * @return {Object}
-       */
-      parseBrowser() {
-        this.parsedResult.browser = {};
-
-        const browserDescriptor = Utils.find(browsersList, (_browser) => {
-          if (typeof _browser.test === 'function') {
-            return _browser.test(this);
-          }
-
-          if (_browser.test instanceof Array) {
-            return _browser.test.some(condition => this.test(condition));
-          }
-
-          throw new Error("Browser's test function is not valid");
-        });
-
-        if (browserDescriptor) {
-          this.parsedResult.browser = browserDescriptor.describe(this.getUA());
-        }
-
-        return this.parsedResult.browser;
-      }
-
-      /**
-       * Get parsed browser object
-       * @return {Object}
-       *
-       * @public
-       */
-      getBrowser() {
-        if (this.parsedResult.browser) {
-          return this.parsedResult.browser;
-        }
-
-        return this.parseBrowser();
-      }
-
-      /**
-       * Get browser's name
-       * @return {String} Browser's name or an empty string
-       *
-       * @public
-       */
-      getBrowserName(toLowerCase) {
-        if (toLowerCase) {
-          return String(this.getBrowser().name).toLowerCase() || '';
-        }
-        return this.getBrowser().name || '';
-      }
-
-
-      /**
-       * Get browser's version
-       * @return {String} version of browser
-       *
-       * @public
-       */
-      getBrowserVersion() {
-        return this.getBrowser().version;
-      }
-
-      /**
-       * Get OS
-       * @return {Object}
-       *
-       * @example
-       * this.getOS();
-       * {
-       *   name: 'macOS',
-       *   version: '10.11.12'
-       * }
-       */
-      getOS() {
-        if (this.parsedResult.os) {
-          return this.parsedResult.os;
-        }
-
-        return this.parseOS();
-      }
-
-      /**
-       * Parse OS and save it to this.parsedResult.os
-       * @return {*|{}}
-       */
-      parseOS() {
-        this.parsedResult.os = {};
-
-        const os = Utils.find(osParsersList, (_os) => {
-          if (typeof _os.test === 'function') {
-            return _os.test(this);
-          }
-
-          if (_os.test instanceof Array) {
-            return _os.test.some(condition => this.test(condition));
-          }
-
-          throw new Error("Browser's test function is not valid");
-        });
-
-        if (os) {
-          this.parsedResult.os = os.describe(this.getUA());
-        }
-
-        return this.parsedResult.os;
-      }
-
-      /**
-       * Get OS name
-       * @param {Boolean} [toLowerCase] return lower-cased value
-       * @return {String} name of the OS — macOS, Windows, Linux, etc.
-       */
-      getOSName(toLowerCase) {
-        const { name } = this.getOS();
-
-        if (toLowerCase) {
-          return String(name).toLowerCase() || '';
-        }
-
-        return name || '';
-      }
-
-      /**
-       * Get OS version
-       * @return {String} full version with dots ('10.11.12', '5.6', etc)
-       */
-      getOSVersion() {
-        return this.getOS().version;
-      }
-
-      /**
-       * Get parsed platform
-       * @return {{}}
-       */
-      getPlatform() {
-        if (this.parsedResult.platform) {
-          return this.parsedResult.platform;
-        }
-
-        return this.parsePlatform();
-      }
-
-      /**
-       * Get platform name
-       * @param {Boolean} [toLowerCase=false]
-       * @return {*}
-       */
-      getPlatformType(toLowerCase = false) {
-        const { type } = this.getPlatform();
-
-        if (toLowerCase) {
-          return String(type).toLowerCase() || '';
-        }
-
-        return type || '';
-      }
-
-      /**
-       * Get parsed platform
-       * @return {{}}
-       */
-      parsePlatform() {
-        this.parsedResult.platform = {};
-
-        const platform = Utils.find(platformParsersList, (_platform) => {
-          if (typeof _platform.test === 'function') {
-            return _platform.test(this);
-          }
-
-          if (_platform.test instanceof Array) {
-            return _platform.test.some(condition => this.test(condition));
-          }
-
-          throw new Error("Browser's test function is not valid");
-        });
-
-        if (platform) {
-          this.parsedResult.platform = platform.describe(this.getUA());
-        }
-
-        return this.parsedResult.platform;
-      }
-
-      /**
-       * Get parsed engine
-       * @return {{}}
-       */
-      getEngine() {
-        if (this.parsedResult.engine) {
-          return this.parsedResult.engine;
-        }
-
-        return this.parseEngine();
-      }
-
-      /**
-       * Get engines's name
-       * @return {String} Engines's name or an empty string
-       *
-       * @public
-       */
-      getEngineName(toLowerCase) {
-        if (toLowerCase) {
-          return String(this.getEngine().name).toLowerCase() || '';
-        }
-        return this.getEngine().name || '';
-      }
-
-      /**
-       * Get parsed platform
-       * @return {{}}
-       */
-      parseEngine() {
-        this.parsedResult.engine = {};
-
-        const engine = Utils.find(enginesParsersList, (_engine) => {
-          if (typeof _engine.test === 'function') {
-            return _engine.test(this);
-          }
-
-          if (_engine.test instanceof Array) {
-            return _engine.test.some(condition => this.test(condition));
-          }
-
-          throw new Error("Browser's test function is not valid");
-        });
-
-        if (engine) {
-          this.parsedResult.engine = engine.describe(this.getUA());
-        }
-
-        return this.parsedResult.engine;
-      }
-
-      /**
-       * Parse full information about the browser
-       * @returns {Parser}
-       */
-      parse() {
-        this.parseBrowser();
-        this.parseOS();
-        this.parsePlatform();
-        this.parseEngine();
-
-        return this;
-      }
-
-      /**
-       * Get parsed result
-       * @return {ParsedResult}
-       */
-      getResult() {
-        return Utils.assign({}, this.parsedResult);
-      }
-
-      /**
-       * Check if parsed browser matches certain conditions
-       *
-       * @param {Object} checkTree It's one or two layered object,
-       * which can include a platform or an OS on the first layer
-       * and should have browsers specs on the bottom-laying layer
-       *
-       * @returns {Boolean|undefined} Whether the browser satisfies the set conditions or not.
-       * Returns `undefined` when the browser is no described in the checkTree object.
-       *
-       * @example
-       * const browser = Bowser.getParser(window.navigator.userAgent);
-       * if (browser.satisfies({chrome: '>118.01.1322' }))
-       * // or with os
-       * if (browser.satisfies({windows: { chrome: '>118.01.1322' } }))
-       * // or with platforms
-       * if (browser.satisfies({desktop: { chrome: '>118.01.1322' } }))
-       */
-      satisfies(checkTree) {
-        const platformsAndOSes = {};
-        let platformsAndOSCounter = 0;
-        const browsers = {};
-        let browsersCounter = 0;
-
-        const allDefinitions = Object.keys(checkTree);
-
-        allDefinitions.forEach((key) => {
-          const currentDefinition = checkTree[key];
-          if (typeof currentDefinition === 'string') {
-            browsers[key] = currentDefinition;
-            browsersCounter += 1;
-          } else if (typeof currentDefinition === 'object') {
-            platformsAndOSes[key] = currentDefinition;
-            platformsAndOSCounter += 1;
-          }
-        });
-
-        if (platformsAndOSCounter > 0) {
-          const platformsAndOSNames = Object.keys(platformsAndOSes);
-          const OSMatchingDefinition = Utils.find(platformsAndOSNames, name => (this.isOS(name)));
-
-          if (OSMatchingDefinition) {
-            const osResult = this.satisfies(platformsAndOSes[OSMatchingDefinition]);
-
-            if (osResult !== void 0) {
-              return osResult;
+        /**
+         * Set the attribute value on an HTMLElement
+         * @param elem - the element on which to set the attribute.
+         */
+        apply(elem) {
+            const isValid = this.tags.length === 0
+                || this.tags.indexOf(elem.tagName) > -1;
+            if (!isValid) {
+                console.warn(`Element ${elem.tagName} does not support Attribute ${this.key}`);
             }
-          }
-
-          const platformMatchingDefinition = Utils.find(
-            platformsAndOSNames,
-            name => (this.isPlatform(name)),
-          );
-          if (platformMatchingDefinition) {
-            const platformResult = this.satisfies(platformsAndOSes[platformMatchingDefinition]);
-
-            if (platformResult !== void 0) {
-              return platformResult;
+            else if (this.key === "style") {
+                Object.assign(elem.style, this.value);
             }
-          }
+            else if (this.bySetAttribute) {
+                elem.setAttribute(this.key, this.value);
+            }
+            else if (this.key in elem) {
+                elem[this.key] = this.value;
+            }
+            else if (this.value === false) {
+                elem.removeAttribute(this.key);
+            }
+            else if (this.value === true) {
+                elem.setAttribute(this.key, "");
+            }
+            else {
+                elem.setAttribute(this.key, this.value);
+            }
         }
-
-        if (browsersCounter > 0) {
-          const browserNames = Object.keys(browsers);
-          const matchingDefinition = Utils.find(browserNames, name => (this.isBrowser(name, true)));
-
-          if (matchingDefinition !== void 0) {
-            return this.compareVersion(browsers[matchingDefinition]);
-          }
-        }
-
-        return undefined;
-      }
-
-      /**
-       * Check if the browser name equals the passed string
-       * @param browserName The string to compare with the browser name
-       * @param [includingAlias=false] The flag showing whether alias will be included into comparison
-       * @returns {boolean}
-       */
-      isBrowser(browserName, includingAlias = false) {
-        const defaultBrowserName = this.getBrowserName().toLowerCase();
-        let browserNameLower = browserName.toLowerCase();
-        const alias = Utils.getBrowserTypeByAlias(browserNameLower);
-
-        if (includingAlias && alias) {
-          browserNameLower = alias.toLowerCase();
-        }
-        return browserNameLower === defaultBrowserName;
-      }
-
-      compareVersion(version) {
-        let expectedResults = [0];
-        let comparableVersion = version;
-        let isLoose = false;
-
-        const currentBrowserVersion = this.getBrowserVersion();
-
-        if (typeof currentBrowserVersion !== 'string') {
-          return void 0;
-        }
-
-        if (version[0] === '>' || version[0] === '<') {
-          comparableVersion = version.substr(1);
-          if (version[1] === '=') {
-            isLoose = true;
-            comparableVersion = version.substr(2);
-          } else {
-            expectedResults = [];
-          }
-          if (version[0] === '>') {
-            expectedResults.push(1);
-          } else {
-            expectedResults.push(-1);
-          }
-        } else if (version[0] === '=') {
-          comparableVersion = version.substr(1);
-        } else if (version[0] === '~') {
-          isLoose = true;
-          comparableVersion = version.substr(1);
-        }
-
-        return expectedResults.indexOf(
-          Utils.compareVersions(currentBrowserVersion, comparableVersion, isLoose),
-        ) > -1;
-      }
-
-      isOS(osName) {
-        return this.getOSName(true) === String(osName).toLowerCase();
-      }
-
-      isPlatform(platformType) {
-        return this.getPlatformType(true) === String(platformType).toLowerCase();
-      }
-
-      isEngine(engineName) {
-        return this.getEngineName(true) === String(engineName).toLowerCase();
-      }
-
-      /**
-       * Is anything? Check if the browser is called "anything",
-       * the OS called "anything" or the platform called "anything"
-       * @param {String} anything
-       * @param [includingAlias=false] The flag showing whether alias will be included into comparison
-       * @returns {Boolean}
-       */
-      is(anything, includingAlias = false) {
-        return this.isBrowser(anything, includingAlias) || this.isOS(anything)
-          || this.isPlatform(anything);
-      }
-
-      /**
-       * Check if any of the given values satisfies this.is(anything)
-       * @param {String[]} anythings
-       * @returns {Boolean}
-       */
-      some(anythings = []) {
-        return anythings.some(anything => this.is(anything));
-      }
     }
-
-    /*!
-     * Bowser - a browser detector
-     * https://github.com/lancedikson/bowser
-     * MIT License | (c) Dustin Diaz 2012-2015
-     * MIT License | (c) Denis Demchenko 2015-2019
-     */
-
     /**
-     * Bowser class.
-     * Keep it simple as much as it can be.
-     * It's supposed to work with collections of {@link Parser} instances
-     * rather then solve one-instance problems.
-     * All the one-instance stuff is located in Parser class.
-     *
-     * @class
-     * @classdesc Bowser is a static object, that provides an API to the Parsers
-     * @hideconstructor
-     */
-    class Bowser {
-      /**
-       * Creates a {@link Parser} instance
-       *
-       * @param {String} UA UserAgent string
-       * @param {Boolean} [skipParsing=false] Will make the Parser postpone parsing until you ask it
-       * explicitly. Same as `skipParsing` for {@link Parser}.
-       * @returns {Parser}
-       * @throws {Error} when UA is not a String
-       *
-       * @example
-       * const parser = Bowser.getParser(window.navigator.userAgent);
-       * const result = parser.getResult();
-       */
-      static getParser(UA, skipParsing = false) {
-        if (typeof UA !== 'string') {
-          throw new Error('UserAgent should be a string');
+     * The audio or video should play as soon as possible.
+      **/
+    function autoPlay(value) { return new Attr("autoplay", value, false, "audio", "video"); }
+    /**
+     * Indicates whether the browser should show playback controls to the user.
+      **/
+    function controls(value) { return new Attr("controls", value, false, "audio", "video"); }
+    /**
+     * Specifies the height of elements listed here. For all other elements, use the CSS height property.
+      **/
+    function htmlHeight(value) { return new Attr("height", value, false, "canvas", "embed", "iframe", "img", "input", "object", "video"); }
+    /**
+     * Indicates whether the audio will be initially silenced on page load.
+      **/
+    function muted(value) { return new Attr("muted", value, false, "audio", "video"); }
+    /**
+     * Indicates that the media element should play automatically on iOS.
+      **/
+    function playsInline(value) { return new Attr("playsInline", value, false, "audio", "video"); }
+    /**
+     * The URL of the embeddable content.
+      **/
+    function src(value) { return new Attr("src", value, false, "audio", "embed", "iframe", "img", "input", "script", "source", "track", "video"); }
+    /**
+     * A MediaStream object to use as a source for an HTML video or audio element
+      **/
+    function srcObject(value) { return new Attr("srcObject", value, false, "audio", "video"); }
+    /**
+     * For the elements listed here, this establishes the element's width.
+      **/
+    function htmlWidth(value) { return new Attr("width", value, false, "canvas", "embed", "iframe", "img", "input", "object", "video"); }
+
+    function getTestNumber() {
+        if ("location" in globalThis) {
+            const loc = new URL(globalThis.location.href);
+            const testNumber = loc.searchParams.get("testUserNumber");
+            return testNumber;
         }
-        return new Parser(UA, skipParsing);
-      }
-
-      /**
-       * Creates a {@link Parser} instance and runs {@link Parser.getResult} immediately
-       *
-       * @param UA
-       * @return {ParsedResult}
-       *
-       * @example
-       * const result = Bowser.parse(window.navigator.userAgent);
-       */
-      static parse(UA) {
-        return (new Parser(UA)).getResult();
-      }
-
-      static get BROWSER_MAP() {
-        return BROWSER_MAP;
-      }
-
-      static get ENGINE_MAP() {
-        return ENGINE_MAP;
-      }
-
-      static get OS_MAP() {
-        return OS_MAP;
-      }
-
-      static get PLATFORMS_MAP() {
-        return PLATFORMS_MAP;
-      }
+        else {
+            return null;
+        }
+    }
+    /**
+     * The test instance value that the current window has loaded. This is
+     * figured out either from a number in the query string parameter "testUserNumber",
+     * or the default value of 1.
+     **/
+    function getUserNumber() {
+        const testNumber = getTestNumber();
+        return isDefined(testNumber)
+            ? parseInt(testNumber, 10)
+            : 1;
     }
 
-    const browser = Bowser.getParser(navigator.userAgent).getResult();
-    const isDesktop = browser.platform.type === "desktop";
-    const isChrome = browser.engine.name === "Blink";
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.platform)
+    const windows = [];
+    if ("window" in globalThis) {
+        // Closes all the windows.
+        window.addEventListener("unload", () => {
+            for (const w of windows) {
+                w.close();
+            }
+        });
+    }
+    /**
+     * Opens a window that will be closed when the window that opened it is closed.
+     * @param href - the location to load in the window
+     * @param x - the screen position horizontal component
+     * @param y - the screen position vertical component
+     * @param width - the screen size horizontal component
+     * @param height - the screen size vertical component
+     */
+    function openWindow(href, x, y, width, height) {
+        if ("window" in globalThis) {
+            const w = window.open(href, "_blank", `left=${x},top=${y},width=${width},height=${height}`);
+            if (w) {
+                windows.push(w);
+            }
+        }
+        else {
+            throw new Error("Cannot open a window from a Worker.");
+        }
+    }
+    /**
+     * Opens a new window with a query string parameter that can be used to differentiate different test instances.
+     **/
+    function openSideTest() {
+        if ("window" in globalThis) {
+            const loc = new URL(location.href);
+            loc.searchParams.set("testUserNumber", (getUserNumber() + windows.length + 1).toString());
+            openWindow(loc.href, window.screenLeft + window.outerWidth, 0, window.innerWidth, window.innerHeight);
+        }
+        else {
+            throw new Error("Cannot open a window from a Worker.");
+        }
+    }
+
+    // NOTE: This field gets overwritten in a build process.
+    "chrome" in globalThis && !navigator.userAgent.match("CriOS");
+    /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+    /Opera/.test(navigator.userAgent);
+    /Android/.test(navigator.userAgent);
+    /iPad|iPhone|iPod/.test(navigator.platform)
         || /Macintosh(.*?) FxiOS(.*?)\//.test(navigator.platform)
         || navigator.platform === "MacIntel" && navigator.maxTouchPoints > 2;
-    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-    const isMobileVR = /Mobile VR/.test(navigator.userAgent);
-    const isOculus = /oculus/.test(navigator.userAgent);
-    const isOculusGo = isOculus && /pacific/.test(navigator.userAgent);
-    const isOculusQuest = isOculus && /quest/.test(navigator.userAgent);
+    /Macintosh/.test(navigator.userAgent || "");
+    /BlackBerry/.test(navigator.userAgent);
+    /(UC Browser |UCWEB)/.test(navigator.userAgent);
+    const isOculus = /oculus/i.test(navigator.userAgent);
+    isOculus && /pacific/i.test(navigator.userAgent);
+    isOculus && /quest/i.test(navigator.userAgent);
+    isOculus && /quest 2/i.test(navigator.userAgent);
+    /Mobile VR/.test(navigator.userAgent)
+        || isOculus;
+
+    class CssProp {
+        constructor(key, value) {
+            this.key = key;
+            this.value = value;
+            this.name = key.replace(/[A-Z]/g, (m) => {
+                return "-" + m.toLocaleLowerCase();
+            });
+        }
+        /**
+         * Set the attribute value on an HTMLElement
+         * @param elem - the element on which to set the attribute.
+         */
+        apply(elem) {
+            elem[this.key] = this.value;
+        }
+    }
+    class CssPropSet {
+        constructor(...rest) {
+            this.rest = rest;
+        }
+        /**
+         * Set the attribute value on an HTMLElement
+         * @param style - the element on which to set the attribute.
+         */
+        apply(style) {
+            for (const prop of this.rest) {
+                prop.apply(style);
+            }
+        }
+    }
+    /**
+     * Combine style properties.
+     **/
+    function styles(...rest) {
+        return new CssPropSet(...rest);
+    }
+    function display(v) { return new CssProp("display", v); }
+
+    function isErsatzElement(obj) {
+        return isObject(obj)
+            && "element" in obj
+            && obj.element instanceof Node;
+    }
+    /**
+     * Creates an HTML element for a given tag name.
+     *
+     * Boolean attributes that you want to default to true can be passed
+     * as just the attribute creating function,
+     *   e.g. `Audio(autoPlay)` vs `Audio(autoPlay(true))`
+     * @param name - the name of the tag
+     * @param rest - optional attributes, child elements, and text
+     * @returns
+     */
+    function tag(name, ...rest) {
+        let elem = null;
+        for (const attr of rest) {
+            if (attr instanceof Attr) {
+                if (attr.key === "id") {
+                    elem = document.getElementById(attr.value);
+                    break;
+                }
+                else if (attr.key === "selector") {
+                    elem = document.querySelector(attr.value);
+                    break;
+                }
+            }
+        }
+        if (elem == null) {
+            elem = document.createElement(name);
+        }
+        for (let x of rest) {
+            if (x != null) {
+                if (x instanceof CssPropSet) {
+                    x.apply(elem.style);
+                }
+                else if (isString(x)
+                    || isNumber(x)
+                    || isBoolean(x)
+                    || x instanceof Date
+                    || x instanceof Node
+                    || isErsatzElement(x)) {
+                    if (isErsatzElement(x)) {
+                        x = x.element;
+                    }
+                    else if (!(x instanceof Node)) {
+                        x = document.createTextNode(x.toLocaleString());
+                    }
+                    elem.appendChild(x);
+                }
+                else {
+                    if (x instanceof Function) {
+                        x = x(true);
+                    }
+                    if (!(x instanceof Attr) || x.key !== "selector") {
+                        x.apply(elem);
+                    }
+                }
+            }
+        }
+        return elem;
+    }
+    function Audio(...rest) { return tag("audio", ...rest); }
+    function Canvas(...rest) { return tag("canvas", ...rest); }
+    function Img(...rest) { return tag("img", ...rest); }
+    function Script(...rest) { return tag("script", ...rest); }
+
+    const hasOffscreenCanvas = "OffscreenCanvas" in globalThis;
+    const hasImageBitmap = "createImageBitmap" in globalThis;
+    function testOffscreen2D() {
+        try {
+            const canv = new OffscreenCanvas(1, 1);
+            const g = canv.getContext("2d");
+            return g != null;
+        }
+        catch (exp) {
+            return false;
+        }
+    }
+    const hasOffscreenCanvasRenderingContext2D = hasOffscreenCanvas && testOffscreen2D();
+    const createUtilityCanvas = hasOffscreenCanvasRenderingContext2D
+        ? createOffscreenCanvas
+        : createCanvas;
+    function testOffscreen3D() {
+        try {
+            const canv = new OffscreenCanvas(1, 1);
+            const g = canv.getContext("webgl2");
+            return g != null;
+        }
+        catch (exp) {
+            return false;
+        }
+    }
+    hasOffscreenCanvas && testOffscreen3D();
+    function testBitmapRenderer() {
+        try {
+            const canv = createUtilityCanvas(1, 1);
+            const g = canv.getContext("bitmaprenderer");
+            return g != null;
+        }
+        catch (exp) {
+            return false;
+        }
+    }
+    hasImageBitmap && testBitmapRenderer();
+    function createOffscreenCanvas(width, height) {
+        return new OffscreenCanvas(width, height);
+    }
+    function createCanvas(w, h) {
+        return Canvas(htmlWidth(w), htmlHeight(h));
+    }
+
+    function createScript(file) {
+        const script = Script(src(file));
+        document.body.appendChild(script);
+    }
+
+    function dumpProgress(_soFar, _total, _message, _est) {
+        // do nothing
+    }
+
+    function normalizeMap(map, key, value) {
+        if (isNullOrUndefined(map)) {
+            map = new Map();
+        }
+        if (!map.has(key)) {
+            map.set(key, value);
+        }
+        return map;
+    }
+    async function fileToImage(file) {
+        const img = Img(src(file));
+        await once(img, "loaded");
+        return img;
+    }
+    function trackXHRProgress(name, xhr, target, onProgress, skipLoading, prevTask) {
+        return new Promise((resolve, reject) => {
+            let done = false;
+            let loaded = skipLoading;
+            function maybeResolve() {
+                if (loaded && done) {
+                    resolve();
+                }
+            }
+            async function onError() {
+                await prevTask;
+                reject(xhr.status);
+            }
+            target.addEventListener("loadstart", async () => {
+                await prevTask;
+                onProgress(0, 1, name);
+            });
+            target.addEventListener("progress", async (ev) => {
+                const evt = ev;
+                await prevTask;
+                onProgress(evt.loaded, Math.max(evt.loaded, evt.total), name);
+                if (evt.loaded === evt.total) {
+                    loaded = true;
+                    maybeResolve();
+                }
+            });
+            target.addEventListener("load", async () => {
+                await prevTask;
+                onProgress(1, 1, name);
+                done = true;
+                maybeResolve();
+            });
+            target.addEventListener("error", onError);
+            target.addEventListener("abort", onError);
+        });
+    }
+    function setXHRHeaders(xhr, method, path, xhrType, headers) {
+        xhr.open(method, path);
+        xhr.responseType = xhrType;
+        if (headers) {
+            for (const [key, value] of headers) {
+                xhr.setRequestHeader(key, value);
+            }
+        }
+    }
+    async function blobToBuffer(blob) {
+        const buffer = await blob.arrayBuffer();
+        return {
+            buffer,
+            contentType: blob.type
+        };
+    }
+    class Fetcher {
+        async getXHR(path, xhrType, headers, onProgress) {
+            onProgress = onProgress || dumpProgress;
+            const xhr = new XMLHttpRequest();
+            const download = trackXHRProgress("downloading", xhr, xhr, onProgress, true, Promise.resolve());
+            setXHRHeaders(xhr, "GET", path, xhrType, headers);
+            xhr.send();
+            await download;
+            return xhr.response;
+        }
+        async postXHR(path, xhrType, obj, contentType, headers, onProgress) {
+            onProgress = onProgress || dumpProgress;
+            const [upProg, downProg] = splitProgress(onProgress, [1, 1]);
+            const xhr = new XMLHttpRequest();
+            const upload = trackXHRProgress("uploading", xhr, xhr.upload, upProg, false, Promise.resolve());
+            const download = trackXHRProgress("saving", xhr, xhr, downProg, true, upload);
+            let body = null;
+            if (!(obj instanceof FormData)
+                && isDefined(contentType)) {
+                headers = normalizeMap(headers, "Content-Type", contentType);
+            }
+            if (isXHRBodyInit(obj) && !isString(obj)) {
+                body = obj;
+            }
+            else if (isDefined(obj)) {
+                body = JSON.stringify(obj);
+            }
+            setXHRHeaders(xhr, "POST", path, xhrType, headers);
+            if (isDefined(body)) {
+                xhr.send(body);
+            }
+            else {
+                xhr.send();
+            }
+            await upload;
+            await download;
+            return xhr.response;
+        }
+        async getBlob(path, headers, onProgress) {
+            return await this.getXHR(path, "blob", headers, onProgress);
+        }
+        async postObjectForBlob(path, obj, contentType, headers, onProgress) {
+            return await this.postXHR(path, "blob", obj, contentType, headers, onProgress);
+        }
+        async getBuffer(path, headers, onProgress) {
+            const blob = await this.getBlob(path, headers, onProgress);
+            return await blobToBuffer(blob);
+        }
+        async postObjectForBuffer(path, obj, contentType, headers, onProgress) {
+            const blob = await this.postObjectForBlob(path, obj, contentType, headers, onProgress);
+            return await blobToBuffer(blob);
+        }
+        async getFile(path, headers, onProgress) {
+            const blob = await this.getBlob(path, headers, onProgress);
+            return URL.createObjectURL(blob);
+        }
+        async postObjectForFile(path, obj, contentType, headers, onProgress) {
+            const blob = await this.postObjectForBlob(path, obj, contentType, headers, onProgress);
+            return URL.createObjectURL(blob);
+        }
+        async getText(path, headers, onProgress) {
+            return await this.getXHR(path, "text", headers, onProgress);
+        }
+        async postObjectForText(path, obj, contentType, headers, onProgress) {
+            return this.postXHR(path, "text", obj, contentType, headers, onProgress);
+        }
+        async getObject(path, headers, onProgress) {
+            if (!headers) {
+                headers = new Map();
+            }
+            if (!headers.has("Accept")) {
+                headers.set("Accept", "application/json");
+            }
+            return await this.getXHR(path, "json", headers, onProgress);
+        }
+        async postObjectForObject(path, obj, contentType, headers, onProgress) {
+            return await this.postXHR(path, "json", obj, contentType, headers, onProgress);
+        }
+        async postObject(path, obj, contentType, headers, onProgress) {
+            await this.postXHR(path, "", obj, contentType, headers, onProgress);
+        }
+        async getXml(path, headers, onProgress) {
+            const doc = await this.getXHR(path, "document", headers, onProgress);
+            return doc.documentElement;
+        }
+        async postObjectForXml(path, obj, contentType, headers, onProgress) {
+            const doc = await this.postXHR(path, "document", obj, contentType, headers, onProgress);
+            return doc.documentElement;
+        }
+        async getImageBitmap(path, headers, onProgress) {
+            const blob = await this.getBlob(path, headers, onProgress);
+            return await createImageBitmap(blob);
+        }
+        async getCanvasImage(path, headers, onProgress) {
+            if (hasImageBitmap) {
+                return await this.getImageBitmap(path, headers, onProgress);
+            }
+            else {
+                const file = await this.getFile(path, headers, onProgress);
+                return await fileToImage(file);
+            }
+        }
+        async postObjectForImageBitmap(path, obj, contentType, headers, onProgress) {
+            const blob = await this.postObjectForBlob(path, obj, contentType, headers, onProgress);
+            return await createImageBitmap(blob);
+        }
+        async postObjectForCanvasImage(path, obj, contentType, headers, onProgress) {
+            if (hasImageBitmap) {
+                return await this.postObjectForImageBitmap(path, obj, contentType, headers, onProgress);
+            }
+            else {
+                const file = await this.postObjectForFile(path, obj, contentType, headers, onProgress);
+                return await fileToImage(file);
+            }
+        }
+        async loadScript(path, test, onProgress) {
+            if (!test()) {
+                const scriptLoadTask = waitFor(test);
+                const file = await this.getFile(path, null, onProgress);
+                createScript(file);
+                await scriptLoadTask;
+            }
+            else if (onProgress) {
+                onProgress(1, 1, "skip");
+            }
+        }
+        async getWASM(path, imports, onProgress) {
+            const wasmBuffer = await this.getBuffer(path, null, onProgress);
+            if (wasmBuffer.contentType !== "application/wasm") {
+                throw new Error("Server did not respond with WASM file. Was: " + wasmBuffer.contentType);
+            }
+            const wasmModule = await WebAssembly.instantiate(wasmBuffer.buffer, imports);
+            return wasmModule.instance.exports;
+        }
+    }
 
     const gestures = [
         "change",
@@ -3923,115 +1979,156 @@
     }
 
     /**
-     * Base class providing functionality for spatializers.
+     * Force a value onto a range
      */
-    class BaseSpatializer {
-        constructor(audioContext) {
-            this.audioContext = audioContext;
-            this.gain = null;
-            this.minDistance = 1;
-            this.maxDistance = 10;
-            this.rolloff = 1;
-            this.algorithm = "logarithmic";
-            this.transitionTime = 0.1;
-            this.gain = audioContext.createGain();
-        }
-        /**
-         * Sets parameters that alter spatialization.
-         **/
-        setAudioProperties(minDistance, maxDistance, rolloff, algorithm, transitionTime) {
-            this.minDistance = minDistance;
-            this.maxDistance = maxDistance;
-            this.rolloff = rolloff;
-            this.algorithm = algorithm;
-            this.transitionTime = transitionTime;
-        }
-        /**
-         * Discard values and make this instance useless.
-         */
-        dispose() {
-            if (this.gain) {
-                this.gain.disconnect();
-                this.gain = null;
-            }
-        }
-        get volume() {
-            return this.gain.gain.value;
-        }
-        set volume(v) {
-            this.gain.gain.value = v;
-        }
-        play() {
-            return Promise.resolve();
-        }
-        stop() {
-        }
+    function clamp(v, min, max) {
+        return Math.min(max, Math.max(min, v));
     }
 
     /**
-     * Base class providing functionality for audio sources.
+     * An Event class for tracking changes to audio activity.
      **/
-    class BaseNode extends BaseSpatializer {
+    class AudioActivityEvent extends Event {
+        /** Creates a new "audioActivity" event */
+        constructor() {
+            super("audioActivity");
+            this.id = null;
+            this.isActive = false;
+            Object.seal(this);
+        }
         /**
-         * Creates a spatializer that keeps track of the relative position
-         * of an audio element to the listener destination.
-         * @param id
-         * @param stream
-         * @param audioContext - the output WebAudio context
-         * @param node - this node out to which to pipe the stream
+         * Sets the current state of the event
+         * @param id - the user for which the activity changed
+         * @param isActive - the new state of the activity
          */
-        constructor(id, source, audioContext) {
-            super(audioContext);
+        set(id, isActive) {
             this.id = id;
-            this.source = source;
-            if (this.source instanceof AudioBufferSourceNode) {
-                this.playingSources = new Array();
-            }
-            else {
-                this.source.connect(this.gain);
+            this.isActive = isActive;
+        }
+    }
+
+    const graph = new Map();
+    const children = new Map();
+    function add$1(a, b) {
+        if (isAudioNode(b)) {
+            children.set(b, (children.get(b) || 0) + 1);
+        }
+        if (!graph.has(a)) {
+            graph.set(a, new Set());
+        }
+        const g = graph.get(a);
+        if (g.has(b)) {
+            return false;
+        }
+        g.add(b);
+        return true;
+    }
+    function rem(a, b) {
+        if (!graph.has(a)) {
+            return false;
+        }
+        const g = graph.get(a);
+        let removed = false;
+        if (isNullOrUndefined(b)) {
+            removed = g.size > 0;
+            g.clear();
+        }
+        else if (g.has(b)) {
+            removed = true;
+            g.delete(b);
+        }
+        if (g.size === 0) {
+            graph.delete(a);
+        }
+        if (isAudioNode(b)
+            && children.has(b)) {
+            const newCount = children.get(b) - 1;
+            children.set(b, newCount);
+            if (newCount === 0) {
+                children.delete(b);
             }
         }
-        /**
-         * Discard values and make this instance useless.
-         */
-        dispose() {
-            if (this.source) {
-                this.source.disconnect();
-                this.source = null;
-            }
-            super.dispose();
+        return removed;
+    }
+    function isAudioNode(a) {
+        return isDefined(a)
+            && isDefined(a.context);
+    }
+    function isAudioParam(a) {
+        return !isAudioNode(a);
+    }
+    function connect(a, b, c, d) {
+        if (isAudioNode(b)) {
+            a.connect(b, c, d);
+            return add$1(a, b);
         }
-        get isPlaying() {
-            return this.playingSources.length > 0;
+        else {
+            a.connect(b, c);
+            return add$1(a, b);
         }
-        async play() {
-            if (this.source instanceof AudioBufferSourceNode) {
-                const newSource = this.source.context.createBufferSource();
-                this.playingSources.push(newSource);
-                newSource.buffer = this.source.buffer;
-                newSource.loop = this.source.loop;
-                newSource.connect(this.gain);
-                newSource.start();
-                if (!this.source.loop) {
-                    await once(newSource, "ended");
-                    if (this.playingSources.indexOf(newSource) >= 0) {
-                        newSource.stop();
-                        newSource.disconnect(this.gain);
-                        arrayRemove(this.playingSources, newSource);
+    }
+    function disconnect(a, b, c, d) {
+        if (isNullOrUndefined(b)) {
+            a.disconnect();
+            return rem(a);
+        }
+        else if (isNumber(b)) {
+            a.disconnect(b);
+            return rem(a);
+        }
+        else if (isAudioNode(b)
+            && isNumber(c)
+            && isNumber(d)) {
+            a.disconnect(b, c, d);
+            return rem(a, b);
+        }
+        else if (isAudioNode(b)
+            && isNumber(c)) {
+            a.disconnect(b, c);
+            return rem(a, b);
+        }
+        else if (isAudioNode(b)) {
+            a.disconnect(b);
+            return rem(a, b);
+        }
+        else if (isAudioParam(b)
+            && isNumber(c)) {
+            a.disconnect(b);
+            return rem(a, b);
+        }
+        else if (isAudioParam(b)) {
+            a.disconnect(b);
+            return rem(a, b);
+        }
+        return false;
+    }
+    function print() {
+        for (const node of graph.keys()) {
+            if (!children.has(node)) {
+                const stack = new Array();
+                stack.push({
+                    pre: "",
+                    node
+                });
+                while (stack.length > 0) {
+                    const { pre, node } = stack.pop();
+                    console.log(pre, node);
+                    if (isAudioNode(node)) {
+                        const set = graph.get(node);
+                        if (set) {
+                            for (const child of set) {
+                                stack.push({
+                                    pre: pre + "  ",
+                                    node: child
+                                });
+                            }
+                        }
                     }
                 }
             }
         }
-        stop() {
-            if (this.source instanceof AudioBufferSourceNode) {
-                for (const source of this.playingSources) {
-                    source.stop();
-                    source.disconnect(this.gain);
-                }
-                arrayClear(this.playingSources);
-            }
-        }
     }
+    window.printGraph = print;
 
     const audioActivityEvt = new AudioActivityEvent();
     const activityCounterMin = 0;
@@ -4053,8 +2150,10 @@
     class ActivityAnalyser extends TypedEventBase {
         constructor(source, audioContext, bufferSize) {
             super();
+            this.source = source;
             this.wasActive = false;
             this.analyser = null;
+            this.disposed = false;
             if (!isGoodNumber(bufferSize)
                 || bufferSize <= 0) {
                 throw new Error("Buffer size must be greater than 0");
@@ -4065,12 +2164,12 @@
             this.wasActive = false;
             this.activityCounter = 0;
             const checkSource = () => {
-                if (source.spatializer instanceof BaseNode
-                    && source.spatializer.source) {
+                if (source.spatializer
+                    && source.source) {
                     this.analyser = audioContext.createAnalyser();
                     this.analyser.fftSize = 2 * this.bufferSize;
                     this.analyser.smoothingTimeConstant = 0.2;
-                    source.spatializer.source.connect(this.analyser);
+                    connect(source.source, this.analyser);
                 }
                 else {
                     setTimeout(checkSource, 0);
@@ -4079,9 +2178,9 @@
             checkSource();
         }
         dispose() {
-            if (this.analyser) {
-                this.analyser.disconnect();
-                this.analyser = null;
+            if (!this.disposed) {
+                disconnect(this.source.source, this.analyser);
+                this.disposed = true;
             }
             this.buffer = null;
         }
@@ -4350,7 +2449,7 @@
      * @returns {vec3} out
      */
 
-    function add$1(out, a, b) {
+    function add$2(out, a, b) {
       out[0] = a[0] + b[0];
       out[1] = a[1] + b[1];
       out[2] = a[2] + b[2];
@@ -4493,7 +2592,7 @@
      * @function
      */
 
-    var forEach = function () {
+    (function () {
       var vec = create$2();
       return function (a, stride, offset, count, fn, arg) {
         var i, l;
@@ -4524,7 +2623,7 @@
 
         return a;
       };
-    }();
+    })();
 
     /**
      * Translate a value into a range.
@@ -4580,7 +2679,7 @@
             else if (end.t <= t) {
                 this.copy(end);
             }
-            else if (start.t < t) {
+            else {
                 const p = project(t, start.t, end.t);
                 this.copy(start);
                 lerp(this.p, this.p, end.p, p);
@@ -4612,17 +2711,17 @@
         setOffset(ox, oy, oz) {
             set$2(delta, ox, oy, oz);
             sub(delta, delta, this.offset);
-            add$1(this.start.p, this.start.p, delta);
-            add$1(this.current.p, this.current.p, delta);
-            add$1(this.end.p, this.end.p, delta);
+            add$2(this.start.p, this.start.p, delta);
+            add$2(this.current.p, this.current.p, delta);
+            add$2(this.end.p, this.end.p, delta);
             scale(this.start.f, this.start.f, k);
-            add$1(this.start.f, this.start.f, delta);
+            add$2(this.start.f, this.start.f, delta);
             normalize(this.start.f, this.start.f);
             scale(this.current.f, this.current.f, k);
-            add$1(this.current.f, this.current.f, delta);
+            add$2(this.current.f, this.current.f, delta);
             normalize(this.current.f, this.current.f);
             scale(this.end.f, this.end.f, k);
-            add$1(this.end.f, this.end.f, delta);
+            add$2(this.end.f, this.end.f, delta);
             normalize(this.end.f, this.end.f);
             set$2(this.offset, ox, oy, oz);
         }
@@ -4644,17 +2743,15 @@
             const ox = this.offset[0];
             const oy = this.offset[1];
             const oz = this.offset[2];
-            this.end.set(px + ox, py + oy, pz + oz, fx, fy, fz, ux, uy, uz);
             this.end.t = t + dt;
-            if (dt > 0) {
-                this.start.copy(this.current);
-                this.start.t = t;
+            this.end.set(px + ox, py + oy, pz + oz, fx, fy, fz, ux, uy, uz);
+            this.start.t = t;
+            this.current.t = t;
+            if (dt <= 0 || this.current.t === 0) {
+                this.start.copy(this.end);
             }
             else {
-                this.start.copy(this.end);
-                this.start.t = t;
-                this.current.copy(this.end);
-                this.current.t = t;
+                this.start.copy(this.current);
             }
         }
         /**
@@ -4690,12 +2787,25 @@
         }
     }
 
-    class AudioSource {
-        constructor(id) {
-            this.id = id;
+    class BaseAudioElement {
+        constructor(audioContext) {
+            this.audioContext = audioContext;
             this.pose = new InterpolatedPose();
-            this.streams = new Map();
             this._spatializer = null;
+            this.disposed = false;
+            this.volumeControl = audioContext.createGain();
+        }
+        dispose() {
+            if (!this.disposed) {
+                this.spatializer = null;
+                this.disposed = true;
+            }
+        }
+        get volume() {
+            return this.volumeControl.gain.value;
+        }
+        set volume(v) {
+            this.volumeControl.gain.value = v;
         }
         get spatializer() {
             return this._spatializer;
@@ -4703,13 +2813,14 @@
         set spatializer(v) {
             if (this.spatializer !== v) {
                 if (this._spatializer) {
+                    this.disconnectSpatializer();
                     this._spatializer.dispose();
                 }
                 this._spatializer = v;
+                if (this._spatializer) {
+                    this.connectSpatializer();
+                }
             }
-        }
-        dispose() {
-            this.spatializer = null;
         }
         /**
          * Update the user.
@@ -4720,6 +2831,168 @@
             if (this.spatializer) {
                 this.spatializer.update(this.pose.current, t);
             }
+        }
+    }
+
+    /**
+     * Base class providing functionality for spatializers.
+     */
+    class BaseSpatializer {
+        constructor(audioContext) {
+            this.audioContext = audioContext;
+            this.minDistance = 1;
+            this.maxDistance = 10;
+            this.rolloff = 1;
+            this.algorithm = "logarithmic";
+            this.transitionTime = 0.1;
+        }
+        dispose() {
+            // nothing to do in the base case
+        }
+        /**
+         * Sets parameters that alter spatialization.
+         **/
+        setAudioProperties(minDistance, maxDistance, rolloff, algorithm, transitionTime) {
+            this.minDistance = minDistance;
+            this.maxDistance = maxDistance;
+            this.rolloff = rolloff;
+            this.algorithm = algorithm;
+            this.transitionTime = transitionTime;
+        }
+    }
+
+    /**
+     * Base class providing functionality for audio listeners.
+     **/
+    class BaseEmitter extends BaseSpatializer {
+        /**
+         * Creates a spatializer that keeps track of position
+         */
+        constructor(audioContext, destination) {
+            super(audioContext);
+            this.destination = destination;
+            this.disposed = false;
+        }
+        dispose() {
+            if (!this.disposed) {
+                if (this.output !== this.destination) {
+                    disconnect(this.output, this.destination);
+                }
+                this.disposed = true;
+            }
+        }
+        copyAudioProperties(from) {
+            this.setAudioProperties(from.minDistance, from.maxDistance, from.rolloff, from.algorithm, from.transitionTime);
+        }
+        clone() {
+            const emitter = this.createNew();
+            emitter.copyAudioProperties(this);
+            return emitter;
+        }
+    }
+
+    class NoSpatializationNode extends BaseEmitter {
+        /**
+         * Creates a new "spatializer" that performs no panning. An anti-spatializer.
+         */
+        constructor(audioContext, destination) {
+            super(audioContext, destination);
+            this.input = this.output = destination;
+            Object.seal(this);
+        }
+        createNew() {
+            return new NoSpatializationNode(this.audioContext, this.destination);
+        }
+        update(_loc, _t) {
+            // do nothing
+        }
+    }
+
+    /**
+     * Base class providing functionality for audio listeners.
+     **/
+    class BaseListener extends BaseSpatializer {
+        /**
+         * Creates a spatializer that keeps track of position
+         */
+        constructor(audioContext) {
+            super(audioContext);
+        }
+        /**
+         * Creates a spatialzer for an audio source.
+         */
+        createSpatializer(spatialize, audioContext, destination) {
+            if (spatialize) {
+                throw new Error("Can't spatialize with the base listener.");
+            }
+            return new NoSpatializationNode(audioContext, destination.nonSpatializedInput);
+        }
+    }
+
+    class NoSpatializationListener extends BaseListener {
+        constructor(audioContext) {
+            super(audioContext);
+            const gain = audioContext.createGain();
+            gain.gain.value = 0.1;
+            this.input = this.output = gain;
+        }
+        /**
+         * Do nothing
+         */
+        update(_loc, _t) {
+        }
+        /**
+         * Creates a spatialzer for an audio source.
+         */
+        createSpatializer(_spatialize, audioContext, destination) {
+            return new NoSpatializationNode(audioContext, destination.nonSpatializedInput);
+        }
+    }
+
+    class AudioDestination extends BaseAudioElement {
+        constructor(audioContext, destination) {
+            super(audioContext);
+            this.disposed2 = false;
+            this._spatializedInput = audioContext.createGain();
+            this._nonSpatializedInput = audioContext.createGain();
+            connect(this._nonSpatializedInput, this.volumeControl);
+            this.setDestination(destination);
+        }
+        dispose() {
+            if (!this.disposed2) {
+                this.setDestination(null);
+                disconnect(this._nonSpatializedInput, this.volumeControl);
+                super.dispose();
+                this.disposed2 = true;
+            }
+        }
+        get spatialized() {
+            return !(this.spatializer instanceof NoSpatializationListener);
+        }
+        get spatializedInput() {
+            return this._spatializedInput;
+        }
+        get nonSpatializedInput() {
+            return this._nonSpatializedInput;
+        }
+        setDestination(v) {
+            if (v !== this._trueDestination) {
+                if (this._trueDestination) {
+                    disconnect(this.volumeControl, this._trueDestination);
+                }
+                this._trueDestination = v;
+                if (this._trueDestination) {
+                    connect(this.volumeControl, this._trueDestination);
+                }
+            }
+        }
+        disconnectSpatializer() {
+            disconnect(this.spatializer.output, this.volumeControl);
+            disconnect(this._spatializedInput, this.spatializer.input);
+        }
+        connectSpatializer() {
+            connect(this._spatializedInput, this.spatializer.input);
+            connect(this.spatializer.output, this.volumeControl);
         }
     }
 
@@ -4735,6 +3008,16 @@
         /** Disable audio output. */
         RenderingMode["None"] = "off";
     })(RenderingMode || (RenderingMode = {}));
+
+    var Direction;
+    (function (Direction) {
+        Direction["Left"] = "left";
+        Direction["Right"] = "right";
+        Direction["Front"] = "front";
+        Direction["Back"] = "back";
+        Direction["Down"] = "down";
+        Direction["Up"] = "up";
+    })(Direction || (Direction = {}));
 
     /**
      * Copyright 2017 Google Inc. All Rights Reserved.
@@ -5493,8 +3776,8 @@
                 1.000000, -0.000000, 0.000000, -0.000000],
         ],
     ];
-    const SPHERICAL_HARMONICS_AZIMUTH_RESOLUTION = SPHERICAL_HARMONICS[0].length;
-    const SPHERICAL_HARMONICS_ELEVATION_RESOLUTION = SPHERICAL_HARMONICS[1].length;
+    SPHERICAL_HARMONICS[0].length;
+    SPHERICAL_HARMONICS[1].length;
     /**
      * The maximum allowed ambisonic order.
      */
@@ -5883,16 +4166,6 @@
         Dimension["Depth"] = "depth";
     })(Dimension || (Dimension = {}));
 
-    var Direction;
-    (function (Direction) {
-        Direction["Left"] = "left";
-        Direction["Right"] = "right";
-        Direction["Front"] = "front";
-        Direction["Back"] = "back";
-        Direction["Down"] = "down";
-        Direction["Up"] = "up";
-    })(Direction || (Direction = {}));
-
     /**
      * @license
      * Copyright 2017 Google Inc. All Rights Reserved.
@@ -5923,7 +4196,7 @@
     const DEFAULT_POSITION = zero(create$2());
     const DEFAULT_FORWARD = set$2(create$2(), 0, 0, -1);
     const DEFAULT_UP = set$2(create$2(), 0, 1, 0);
-    const DEFAULT_RIGHT = set$2(create$2(), 1, 0, 0);
+    set$2(create$2(), 1, 0, 0);
     const DEFAULT_SPEED_OF_SOUND = 343;
     /**
      * Default rolloff model ('logarithmic').
@@ -6222,6 +4495,7 @@
         constructor(context, options) {
             this.channelGain = new Array();
             this.merger = null;
+            this.disposed = false;
             // Use defaults for undefined arguments.
             options = Object.assign({
                 ambisonicOrder: DEFAULT_AMBISONIC_ORDER,
@@ -6265,30 +4539,30 @@
          */
         setAmbisonicOrder(ambisonicOrder) {
             this.ambisonicOrder = Encoder.validateAmbisonicOrder(ambisonicOrder);
-            this.input.disconnect();
-            for (let i = 0; i < this.channelGain.length; i++) {
-                this.channelGain[i].disconnect();
-            }
-            if (this.merger != null) {
-                this.merger.disconnect();
-            }
+            this.dispose();
             // Create audio graph.
             let numChannels = (this.ambisonicOrder + 1) * (this.ambisonicOrder + 1);
             this.merger = this.context.createChannelMerger(numChannels);
             this.channelGain = new Array(numChannels);
             for (let i = 0; i < numChannels; i++) {
                 this.channelGain[i] = this.context.createGain();
-                this.input.connect(this.channelGain[i]);
-                this.channelGain[i].connect(this.merger, 0, i);
+                connect(this.input, this.channelGain[i]);
+                connect(this.channelGain[i], this.merger, 0, i);
             }
-            this.merger.connect(this.output);
+            connect(this.merger, this.output);
         }
         dispose() {
-            this.merger.disconnect(this.output);
-            let numChannels = (this.ambisonicOrder + 1) * (this.ambisonicOrder + 1);
-            for (let i = 0; i < numChannels; ++i) {
-                this.channelGain[i].disconnect(this.merger, 0, i);
-                this.input.disconnect(this.channelGain[i]);
+            if (!this.disposed) {
+                for (let i = 0; i < this.channelGain.length; i++) {
+                    disconnect(this.input, this.channelGain[i]);
+                    if (this.merger) {
+                        disconnect(this.channelGain[i], this.merger, 0, i);
+                    }
+                }
+                if (this.merger) {
+                    disconnect(this.merger, this.output);
+                }
+                this.disposed = true;
             }
         }
         /**
@@ -6511,10 +4785,11 @@
     class FOAConvolver {
         /**
          * FOAConvolver. A collection of 2 stereo convolvers for 4-channel FOA stream.
-         * @param context The associated AudioContext.
+         * @param context The associated BaseAudioContext.
          * @param hrirBufferList - An ordered-list of stereo AudioBuffers for convolution. (i.e. 2 stereo AudioBuffers for FOA)
          */
         constructor(context, hrirBufferList) {
+            this.disposed = false;
             this._context = context;
             this._active = false;
             this._isBufferLoaded = false;
@@ -6539,24 +4814,24 @@
             this._mergerBinaural = this._context.createChannelMerger(2);
             this._summingBus = this._context.createGain();
             // Group W and Y, then Z and X.
-            this._splitterWYZX.connect(this._mergerWY, 0, 0);
-            this._splitterWYZX.connect(this._mergerWY, 1, 1);
-            this._splitterWYZX.connect(this._mergerZX, 2, 0);
-            this._splitterWYZX.connect(this._mergerZX, 3, 1);
+            connect(this._splitterWYZX, this._mergerWY, 0, 0);
+            connect(this._splitterWYZX, this._mergerWY, 1, 1);
+            connect(this._splitterWYZX, this._mergerZX, 2, 0);
+            connect(this._splitterWYZX, this._mergerZX, 3, 1);
             // Create a network of convolvers using splitter/merger.
-            this._mergerWY.connect(this._convolverWY);
-            this._mergerZX.connect(this._convolverZX);
-            this._convolverWY.connect(this._splitterWY);
-            this._convolverZX.connect(this._splitterZX);
-            this._splitterWY.connect(this._mergerBinaural, 0, 0);
-            this._splitterWY.connect(this._mergerBinaural, 0, 1);
-            this._splitterWY.connect(this._mergerBinaural, 1, 0);
-            this._splitterWY.connect(this._inverter, 1, 0);
-            this._inverter.connect(this._mergerBinaural, 0, 1);
-            this._splitterZX.connect(this._mergerBinaural, 0, 0);
-            this._splitterZX.connect(this._mergerBinaural, 0, 1);
-            this._splitterZX.connect(this._mergerBinaural, 1, 0);
-            this._splitterZX.connect(this._mergerBinaural, 1, 1);
+            connect(this._mergerWY, this._convolverWY);
+            connect(this._mergerZX, this._convolverZX);
+            connect(this._convolverWY, this._splitterWY);
+            connect(this._convolverZX, this._splitterZX);
+            connect(this._splitterWY, this._mergerBinaural, 0, 0);
+            connect(this._splitterWY, this._mergerBinaural, 0, 1);
+            connect(this._splitterWY, this._mergerBinaural, 1, 0);
+            connect(this._splitterWY, this._inverter, 1, 0);
+            connect(this._inverter, this._mergerBinaural, 0, 1);
+            connect(this._splitterZX, this._mergerBinaural, 0, 0);
+            connect(this._splitterZX, this._mergerBinaural, 0, 1);
+            connect(this._splitterZX, this._mergerBinaural, 1, 0);
+            connect(this._splitterZX, this._mergerBinaural, 1, 1);
             // By default, WebAudio's convolver does the normalization based on IR's
             // energy. For the precise convolution, it must be disabled before the buffer
             // assignment.
@@ -6569,28 +4844,31 @@
             this.output = this._summingBus;
         }
         dispose() {
-            if (this._active) {
-                this.disable();
+            if (!this.disposed) {
+                if (this._active) {
+                    this.disable();
+                }
+                // Group W and Y, then Z and X.
+                disconnect(this._splitterWYZX, this._mergerWY, 0, 0);
+                disconnect(this._splitterWYZX, this._mergerWY, 1, 1);
+                disconnect(this._splitterWYZX, this._mergerZX, 2, 0);
+                disconnect(this._splitterWYZX, this._mergerZX, 3, 1);
+                // Create a network of convolvers using splitter/merger.
+                disconnect(this._mergerWY, this._convolverWY);
+                disconnect(this._mergerZX, this._convolverZX);
+                disconnect(this._convolverWY, this._splitterWY);
+                disconnect(this._convolverZX, this._splitterZX);
+                disconnect(this._splitterWY, this._mergerBinaural, 0, 0);
+                disconnect(this._splitterWY, this._mergerBinaural, 0, 1);
+                disconnect(this._splitterWY, this._mergerBinaural, 1, 0);
+                disconnect(this._splitterWY, this._inverter, 1, 0);
+                disconnect(this._inverter, this._mergerBinaural, 0, 1);
+                disconnect(this._splitterZX, this._mergerBinaural, 0, 0);
+                disconnect(this._splitterZX, this._mergerBinaural, 0, 1);
+                disconnect(this._splitterZX, this._mergerBinaural, 1, 0);
+                disconnect(this._splitterZX, this._mergerBinaural, 1, 1);
+                this.disposed = true;
             }
-            // Group W and Y, then Z and X.
-            this._splitterWYZX.disconnect(this._mergerWY, 0, 0);
-            this._splitterWYZX.disconnect(this._mergerWY, 1, 1);
-            this._splitterWYZX.disconnect(this._mergerZX, 2, 0);
-            this._splitterWYZX.disconnect(this._mergerZX, 3, 1);
-            // Create a network of convolvers using splitter/merger.
-            this._mergerWY.disconnect(this._convolverWY);
-            this._mergerZX.disconnect(this._convolverZX);
-            this._convolverWY.disconnect(this._splitterWY);
-            this._convolverZX.disconnect(this._splitterZX);
-            this._splitterWY.disconnect(this._mergerBinaural, 0, 0);
-            this._splitterWY.disconnect(this._mergerBinaural, 0, 1);
-            this._splitterWY.disconnect(this._mergerBinaural, 1, 0);
-            this._splitterWY.disconnect(this._inverter, 1, 0);
-            this._inverter.disconnect(this._mergerBinaural, 0, 1);
-            this._splitterZX.disconnect(this._mergerBinaural, 0, 0);
-            this._splitterZX.disconnect(this._mergerBinaural, 0, 1);
-            this._splitterZX.disconnect(this._mergerBinaural, 1, 0);
-            this._splitterZX.disconnect(this._mergerBinaural, 1, 1);
         }
         /**
          * Assigns 2 HRIR AudioBuffers to 2 convolvers: Note that we use 2 stereo
@@ -6617,7 +4895,7 @@
          * the WebAudio engine. (i.e. consume CPU cycle)
          */
         enable() {
-            this._mergerBinaural.connect(this._summingBus);
+            connect(this._mergerBinaural, this._summingBus);
             this._active = true;
         }
         /**
@@ -6625,7 +4903,7 @@
          * audio destination, thus no CPU cycle will be consumed.
          */
         disable() {
-            this._mergerBinaural.disconnect();
+            disconnect(this._mergerBinaural, this._summingBus);
             this._active = false;
         }
     }
@@ -6654,9 +4932,10 @@
     class FOARotator {
         /**
          * First-order-ambisonic decoder based on gain node network.
-         * @param context - Associated AudioContext.
+         * @param context - Associated BaseAudioContext.
          */
         constructor(context) {
+            this.disposed = false;
             this._context = context;
             this._splitter = this._context.createChannelSplitter(4);
             this._inX = this._context.createGain();
@@ -6677,11 +4956,11 @@
             this._merger = this._context.createChannelMerger(4);
             // ACN channel ordering: [1, 2, 3] => [X, Y, Z]
             // X (from channel 1)
-            this._splitter.connect(this._inX, 1);
+            connect(this._splitter, this._inX, 1);
             // Y (from channel 2)
-            this._splitter.connect(this._inY, 2);
+            connect(this._splitter, this._inY, 2);
             // Z (from channel 3)
-            this._splitter.connect(this._inZ, 3);
+            connect(this._splitter, this._inZ, 3);
             this._inX.gain.value = -1;
             this._inY.gain.value = -1;
             this._inZ.gain.value = -1;
@@ -6689,33 +4968,33 @@
             // |X|   | m0  m3  m6 |   | X * m0 + Y * m3 + Z * m6 |   | Xr |
             // |Y| * | m1  m4  m7 | = | X * m1 + Y * m4 + Z * m7 | = | Yr |
             // |Z|   | m2  m5  m8 |   | X * m2 + Y * m5 + Z * m8 |   | Zr |
-            this._inX.connect(this._m0);
-            this._inX.connect(this._m1);
-            this._inX.connect(this._m2);
-            this._inY.connect(this._m3);
-            this._inY.connect(this._m4);
-            this._inY.connect(this._m5);
-            this._inZ.connect(this._m6);
-            this._inZ.connect(this._m7);
-            this._inZ.connect(this._m8);
-            this._m0.connect(this._outX);
-            this._m1.connect(this._outY);
-            this._m2.connect(this._outZ);
-            this._m3.connect(this._outX);
-            this._m4.connect(this._outY);
-            this._m5.connect(this._outZ);
-            this._m6.connect(this._outX);
-            this._m7.connect(this._outY);
-            this._m8.connect(this._outZ);
+            connect(this._inX, this._m0);
+            connect(this._inX, this._m1);
+            connect(this._inX, this._m2);
+            connect(this._inY, this._m3);
+            connect(this._inY, this._m4);
+            connect(this._inY, this._m5);
+            connect(this._inZ, this._m6);
+            connect(this._inZ, this._m7);
+            connect(this._inZ, this._m8);
+            connect(this._m0, this._outX);
+            connect(this._m1, this._outY);
+            connect(this._m2, this._outZ);
+            connect(this._m3, this._outX);
+            connect(this._m4, this._outY);
+            connect(this._m5, this._outZ);
+            connect(this._m6, this._outX);
+            connect(this._m7, this._outY);
+            connect(this._m8, this._outZ);
             // Transform 3: world space to audio space.
             // W -> W (to channel 0)
-            this._splitter.connect(this._merger, 0, 0);
+            connect(this._splitter, this._merger, 0, 0);
             // X (to channel 1)
-            this._outX.connect(this._merger, 0, 1);
+            connect(this._outX, this._merger, 0, 1);
             // Y (to channel 2)
-            this._outY.connect(this._merger, 0, 2);
+            connect(this._outY, this._merger, 0, 2);
             // Z (to channel 3)
-            this._outZ.connect(this._merger, 0, 3);
+            connect(this._outZ, this._merger, 0, 3);
             this._outX.gain.value = -1;
             this._outY.gain.value = -1;
             this._outZ.gain.value = -1;
@@ -6725,44 +5004,47 @@
             this.output = this._merger;
         }
         dispose() {
-            // ACN channel ordering: [1, 2, 3] => [X, Y, Z]
-            // X (from channel 1)
-            this._splitter.disconnect(this._inX, 1);
-            // Y (from channel 2)
-            this._splitter.disconnect(this._inY, 2);
-            // Z (from channel 3)
-            this._splitter.disconnect(this._inZ, 3);
-            // Apply the rotation in the world space.
-            // |X|   | m0  m3  m6 |   | X * m0 + Y * m3 + Z * m6 |   | Xr |
-            // |Y| * | m1  m4  m7 | = | X * m1 + Y * m4 + Z * m7 | = | Yr |
-            // |Z|   | m2  m5  m8 |   | X * m2 + Y * m5 + Z * m8 |   | Zr |
-            this._inX.disconnect(this._m0);
-            this._inX.disconnect(this._m1);
-            this._inX.disconnect(this._m2);
-            this._inY.disconnect(this._m3);
-            this._inY.disconnect(this._m4);
-            this._inY.disconnect(this._m5);
-            this._inZ.disconnect(this._m6);
-            this._inZ.disconnect(this._m7);
-            this._inZ.disconnect(this._m8);
-            this._m0.disconnect(this._outX);
-            this._m1.disconnect(this._outY);
-            this._m2.disconnect(this._outZ);
-            this._m3.disconnect(this._outX);
-            this._m4.disconnect(this._outY);
-            this._m5.disconnect(this._outZ);
-            this._m6.disconnect(this._outX);
-            this._m7.disconnect(this._outY);
-            this._m8.disconnect(this._outZ);
-            // Transform 3: world space to audio space.
-            // W -> W (to channel 0)
-            this._splitter.disconnect(this._merger, 0, 0);
-            // X (to channel 1)
-            this._outX.disconnect(this._merger, 0, 1);
-            // Y (to channel 2)
-            this._outY.disconnect(this._merger, 0, 2);
-            // Z (to channel 3)
-            this._outZ.disconnect(this._merger, 0, 3);
+            if (!this.disposed) {
+                // ACN channel ordering: [1, 2, 3] => [X, Y, Z]
+                // X (from channel 1)
+                disconnect(this._splitter, this._inX, 1);
+                // Y (from channel 2)
+                disconnect(this._splitter, this._inY, 2);
+                // Z (from channel 3)
+                disconnect(this._splitter, this._inZ, 3);
+                // Apply the rotation in the world space.
+                // |X|   | m0  m3  m6 |   | X * m0 + Y * m3 + Z * m6 |   | Xr |
+                // |Y| * | m1  m4  m7 | = | X * m1 + Y * m4 + Z * m7 | = | Yr |
+                // |Z|   | m2  m5  m8 |   | X * m2 + Y * m5 + Z * m8 |   | Zr |
+                disconnect(this._inX, this._m0);
+                disconnect(this._inX, this._m1);
+                disconnect(this._inX, this._m2);
+                disconnect(this._inY, this._m3);
+                disconnect(this._inY, this._m4);
+                disconnect(this._inY, this._m5);
+                disconnect(this._inZ, this._m6);
+                disconnect(this._inZ, this._m7);
+                disconnect(this._inZ, this._m8);
+                disconnect(this._m0, this._outX);
+                disconnect(this._m1, this._outY);
+                disconnect(this._m2, this._outZ);
+                disconnect(this._m3, this._outX);
+                disconnect(this._m4, this._outY);
+                disconnect(this._m5, this._outZ);
+                disconnect(this._m6, this._outX);
+                disconnect(this._m7, this._outY);
+                disconnect(this._m8, this._outZ);
+                // Transform 3: world space to audio space.
+                // W -> W (to channel 0)
+                disconnect(this._splitter, this._merger, 0, 0);
+                // X (to channel 1)
+                disconnect(this._outX, this._merger, 0, 1);
+                // Y (to channel 2)
+                disconnect(this._outY, this._merger, 0, 2);
+                // Z (to channel 3)
+                disconnect(this._outZ, this._merger, 0, 3);
+                this.disposed = true;
+            }
         }
         /**
          * Updates the rotation matrix with 3x3 matrix.
@@ -6856,10 +5138,11 @@
     class FOARouter {
         /**
          * Channel router for FOA stream.
-         * @param context - Associated AudioContext.
+         * @param context - Associated BaseAudioContext.
          * @param channelMap - Routing destination array.
          */
         constructor(context, channelMap) {
+            this.disposed = false;
             this._context = context;
             this._splitter = this._context.createChannelSplitter(4);
             this._merger = this._context.createChannelMerger(4);
@@ -6879,17 +5162,19 @@
             else {
                 this._channelMap = ChannelMaps[channelMap];
             }
-            this._splitter.disconnect();
-            this._splitter.connect(this._merger, 0, this._channelMap[0]);
-            this._splitter.connect(this._merger, 1, this._channelMap[1]);
-            this._splitter.connect(this._merger, 2, this._channelMap[2]);
-            this._splitter.connect(this._merger, 3, this._channelMap[3]);
+            connect(this._splitter, this._merger, 0, this._channelMap[0]);
+            connect(this._splitter, this._merger, 1, this._channelMap[1]);
+            connect(this._splitter, this._merger, 2, this._channelMap[2]);
+            connect(this._splitter, this._merger, 3, this._channelMap[3]);
         }
         dispose() {
-            this._splitter.disconnect(this._merger, 0, this._channelMap[0]);
-            this._splitter.disconnect(this._merger, 1, this._channelMap[1]);
-            this._splitter.disconnect(this._merger, 2, this._channelMap[2]);
-            this._splitter.disconnect(this._merger, 3, this._channelMap[3]);
+            if (!this.disposed) {
+                disconnect(this._splitter, this._merger, 0, this._channelMap[0]);
+                disconnect(this._splitter, this._merger, 1, this._channelMap[1]);
+                disconnect(this._splitter, this._merger, 2, this._channelMap[2]);
+                disconnect(this._splitter, this._merger, 3, this._channelMap[3]);
+                this.disposed = true;
+            }
         }
     }
 
@@ -6921,6 +5206,7 @@
          * Omnitone FOA renderer class. Uses the optimized convolution technique.
          */
         constructor(context, options) {
+            this.disposed = false;
             this.context = context;
             this.config = Object.assign({
                 channelMap: ChannelMap.Default,
@@ -6947,27 +5233,30 @@
             this.router = new FOARouter(this.context, this.config.channelMap);
             this.rotator = new FOARotator(this.context);
             this.convolver = new FOAConvolver(this.context);
-            this.input.connect(this.router.input);
-            this.input.connect(this.bypass);
-            this.router.output.connect(this.rotator.input);
-            this.rotator.output.connect(this.convolver.input);
-            this.convolver.output.connect(this.output);
+            connect(this.input, this.router.input);
+            connect(this.input, this.bypass);
+            connect(this.router.output, this.rotator.input);
+            connect(this.rotator.output, this.convolver.input);
+            connect(this.convolver.output, this.output);
             this.input.channelCount = 4;
             this.input.channelCountMode = 'explicit';
             this.input.channelInterpretation = 'discrete';
         }
         dispose() {
-            if (this.getRenderingMode() === RenderingMode.Bypass) {
-                this.bypass.connect(this.output);
+            if (!this.disposed) {
+                if (this.getRenderingMode() === RenderingMode.Bypass) {
+                    disconnect(this.bypass, this.output);
+                }
+                disconnect(this.input, this.router.input);
+                disconnect(this.input, this.bypass);
+                disconnect(this.router.output, this.rotator.input);
+                disconnect(this.rotator.output, this.convolver.input);
+                disconnect(this.convolver.output, this.output);
+                this.convolver.dispose();
+                this.rotator.dispose();
+                this.router.dispose();
+                this.disposed = true;
             }
-            this.input.disconnect(this.router.input);
-            this.input.disconnect(this.bypass);
-            this.router.output.disconnect(this.rotator.input);
-            this.rotator.output.disconnect(this.convolver.input);
-            this.convolver.output.disconnect(this.output);
-            this.convolver.dispose();
-            this.rotator.dispose();
-            this.router.dispose();
         }
         /**
          * Initializes and loads the resource for the renderer.
@@ -7032,20 +5321,17 @@
             if (mode === this.config.renderingMode) {
                 return;
             }
-            switch (mode) {
-                case RenderingMode.Ambisonic:
-                    this.convolver.enable();
-                    this.bypass.disconnect();
-                    break;
-                case RenderingMode.Bypass:
-                    this.convolver.disable();
-                    this.bypass.connect(this.output);
-                    break;
-                case RenderingMode.None:
-                    this.convolver.disable();
-                    this.bypass.disconnect();
-                    break;
-                default: assertNever(mode);
+            if (mode === RenderingMode.Ambisonic) {
+                this.convolver.enable;
+            }
+            else {
+                this.convolver.disable();
+            }
+            if (mode === RenderingMode.Bypass) {
+                connect(this.bypass, this.output);
+            }
+            else {
+                disconnect(this.bypass, this.output);
             }
             this.config.renderingMode = mode;
         }
@@ -7076,7 +5362,7 @@
     class HOAConvolver {
         /**
          * A convolver network for N-channel HOA stream.
-          * @param context - Associated AudioContext.
+          * @param context - Associated BaseAudioContext.
          * @param ambisonicOrder - Ambisonic order. (2 or 3)
          * @param [hrirBufferList] - An ordered-list of stereo
          * AudioBuffers for convolution. (SOA: 5 AudioBuffers, TOA: 8 AudioBuffers)
@@ -7128,27 +5414,27 @@
                     const stereoIndex = Math.floor(acnIndex / 2);
                     // Split channels from input into array of stereo convolvers.
                     // Then create a network of mergers that produces the stereo output.
-                    this._inputSplitter.connect(this._stereoMergers[stereoIndex], acnIndex, acnIndex % 2);
-                    this._stereoMergers[stereoIndex].connect(this._convolvers[stereoIndex]);
-                    this._convolvers[stereoIndex].connect(this._stereoSplitters[stereoIndex]);
+                    connect(this._inputSplitter, this._stereoMergers[stereoIndex], acnIndex, acnIndex % 2);
+                    connect(this._stereoMergers[stereoIndex], this._convolvers[stereoIndex]);
+                    connect(this._convolvers[stereoIndex], this._stereoSplitters[stereoIndex]);
                     // Positive index (m >= 0) spherical harmonics are symmetrical around the
                     // front axis, while negative index (m < 0) spherical harmonics are
                     // anti-symmetrical around the front axis. We will exploit this symmetry
                     // to reduce the number of convolutions required when rendering to a
                     // symmetrical binaural renderer.
                     if (m >= 0) {
-                        this._stereoSplitters[stereoIndex].connect(this._positiveIndexSphericalHarmonics, acnIndex % 2);
+                        connect(this._stereoSplitters[stereoIndex], this._positiveIndexSphericalHarmonics, acnIndex % 2);
                     }
                     else {
-                        this._stereoSplitters[stereoIndex].connect(this._negativeIndexSphericalHarmonics, acnIndex % 2);
+                        connect(this._stereoSplitters[stereoIndex], this._negativeIndexSphericalHarmonics, acnIndex % 2);
                     }
                 }
             }
-            this._positiveIndexSphericalHarmonics.connect(this._binauralMerger, 0, 0);
-            this._positiveIndexSphericalHarmonics.connect(this._binauralMerger, 0, 1);
-            this._negativeIndexSphericalHarmonics.connect(this._binauralMerger, 0, 0);
-            this._negativeIndexSphericalHarmonics.connect(this._inverter);
-            this._inverter.connect(this._binauralMerger, 0, 1);
+            connect(this._positiveIndexSphericalHarmonics, this._binauralMerger, 0, 0);
+            connect(this._positiveIndexSphericalHarmonics, this._binauralMerger, 0, 1);
+            connect(this._negativeIndexSphericalHarmonics, this._binauralMerger, 0, 0);
+            connect(this._negativeIndexSphericalHarmonics, this._inverter);
+            connect(this._inverter, this._binauralMerger, 0, 1);
             // For asymmetric index.
             this._inverter.gain.value = -1;
             // Input/Output proxy.
@@ -7167,27 +5453,27 @@
                     const stereoIndex = Math.floor(acnIndex / 2);
                     // Split channels from input into array of stereo convolvers.
                     // Then create a network of mergers that produces the stereo output.
-                    this._inputSplitter.disconnect(this._stereoMergers[stereoIndex], acnIndex, acnIndex % 2);
-                    this._stereoMergers[stereoIndex].disconnect(this._convolvers[stereoIndex]);
-                    this._convolvers[stereoIndex].disconnect(this._stereoSplitters[stereoIndex]);
+                    disconnect(this._inputSplitter, this._stereoMergers[stereoIndex], acnIndex, acnIndex % 2);
+                    disconnect(this._stereoMergers[stereoIndex], this._convolvers[stereoIndex]);
+                    disconnect(this._convolvers[stereoIndex], this._stereoSplitters[stereoIndex]);
                     // Positive index (m >= 0) spherical harmonics are symmetrical around the
                     // front axis, while negative index (m < 0) spherical harmonics are
                     // anti-symmetrical around the front axis. We will exploit this symmetry
                     // to reduce the number of convolutions required when rendering to a
                     // symmetrical binaural renderer.
                     if (m >= 0) {
-                        this._stereoSplitters[stereoIndex].disconnect(this._positiveIndexSphericalHarmonics, acnIndex % 2);
+                        disconnect(this._stereoSplitters[stereoIndex], this._positiveIndexSphericalHarmonics, acnIndex % 2);
                     }
                     else {
-                        this._stereoSplitters[stereoIndex].disconnect(this._negativeIndexSphericalHarmonics, acnIndex % 2);
+                        disconnect(this._stereoSplitters[stereoIndex], this._negativeIndexSphericalHarmonics, acnIndex % 2);
                     }
                 }
             }
-            this._positiveIndexSphericalHarmonics.disconnect(this._binauralMerger, 0, 0);
-            this._positiveIndexSphericalHarmonics.disconnect(this._binauralMerger, 0, 1);
-            this._negativeIndexSphericalHarmonics.disconnect(this._binauralMerger, 0, 0);
-            this._negativeIndexSphericalHarmonics.disconnect(this._inverter);
-            this._inverter.disconnect(this._binauralMerger, 0, 1);
+            disconnect(this._positiveIndexSphericalHarmonics, this._binauralMerger, 0, 0);
+            disconnect(this._positiveIndexSphericalHarmonics, this._binauralMerger, 0, 1);
+            disconnect(this._negativeIndexSphericalHarmonics, this._binauralMerger, 0, 0);
+            disconnect(this._negativeIndexSphericalHarmonics, this._inverter);
+            disconnect(this._inverter, this._binauralMerger, 0, 1);
         }
         /**
          * Assigns N HRIR AudioBuffers to N convolvers: Note that we use 2 stereo
@@ -7215,7 +5501,7 @@
          * the WebAudio engine. (i.e. consume CPU cycle)
          */
         enable() {
-            this._binauralMerger.connect(this._outputGain);
+            connect(this._binauralMerger, this._outputGain);
             this._active = true;
         }
         /**
@@ -7223,7 +5509,7 @@
          * audio destination, thus no CPU cycle will be consumed.
          */
         disable() {
-            this._binauralMerger.disconnect();
+            disconnect(this._binauralMerger, this._outputGain);
             this._active = false;
         }
     }
@@ -7469,10 +5755,11 @@
          *      http://pubs.acs.org/doi/pdf/10.1021/jp953350u
          *  [2b] Corrections to initial publication:
          *       http://pubs.acs.org/doi/pdf/10.1021/jp9833350
-         * @param context - Associated AudioContext.
+         * @param context - Associated BaseAudioContext.
          * @param ambisonicOrder - Ambisonic order.
          */
         constructor(context, ambisonicOrder) {
+            this.disposed = false;
             this._context = context;
             this._ambisonicOrder = ambisonicOrder;
             // We need to determine the number of channels K based on the ambisonic order
@@ -7500,13 +5787,13 @@
                         const outputIndex = orderOffset + k;
                         const matrixIndex = j * rows + k;
                         this._gainNodeMatrix[i - 1][matrixIndex] = this._context.createGain();
-                        this._splitter.connect(this._gainNodeMatrix[i - 1][matrixIndex], inputIndex);
-                        this._gainNodeMatrix[i - 1][matrixIndex].connect(this._merger, 0, outputIndex);
+                        connect(this._splitter, this._gainNodeMatrix[i - 1][matrixIndex], inputIndex);
+                        connect(this._gainNodeMatrix[i - 1][matrixIndex], this._merger, 0, outputIndex);
                     }
                 }
             }
             // W-channel is not involved in rotation, skip straight to ouput.
-            this._splitter.connect(this._merger, 0, 0);
+            connect(this._splitter, this._merger, 0, 0);
             // Default Identity matrix.
             this.setRotationMatrix3(identity(create()));
             // Input/Output proxy.
@@ -7514,28 +5801,31 @@
             this.output = this._merger;
         }
         dispose() {
-            for (let i = 1; i <= this._ambisonicOrder; i++) {
-                // Each ambisonic order requires a separate (2l + 1) x (2l + 1) rotation
-                // matrix. We compute the offset value as the first channel index of the
-                // current order where
-                //   k_last = l^2 + l + m,
-                // and m = -l
-                //   k_last = l^2
-                const orderOffset = i * i;
-                // Uses row-major indexing.
-                const rows = (2 * i + 1);
-                for (let j = 0; j < rows; j++) {
-                    const inputIndex = orderOffset + j;
-                    for (let k = 0; k < rows; k++) {
-                        const outputIndex = orderOffset + k;
-                        const matrixIndex = j * rows + k;
-                        this._splitter.disconnect(this._gainNodeMatrix[i - 1][matrixIndex], inputIndex);
-                        this._gainNodeMatrix[i - 1][matrixIndex].disconnect(this._merger, 0, outputIndex);
+            if (!this.disposed) {
+                for (let i = 1; i <= this._ambisonicOrder; i++) {
+                    // Each ambisonic order requires a separate (2l + 1) x (2l + 1) rotation
+                    // matrix. We compute the offset value as the first channel index of the
+                    // current order where
+                    //   k_last = l^2 + l + m,
+                    // and m = -l
+                    //   k_last = l^2
+                    const orderOffset = i * i;
+                    // Uses row-major indexing.
+                    const rows = (2 * i + 1);
+                    for (let j = 0; j < rows; j++) {
+                        const inputIndex = orderOffset + j;
+                        for (let k = 0; k < rows; k++) {
+                            const outputIndex = orderOffset + k;
+                            const matrixIndex = j * rows + k;
+                            disconnect(this._splitter, this._gainNodeMatrix[i - 1][matrixIndex], inputIndex);
+                            disconnect(this._gainNodeMatrix[i - 1][matrixIndex], this._merger, 0, outputIndex);
+                        }
                     }
                 }
+                // W-channel is not involved in rotation, skip straight to ouput.
+                disconnect(this._splitter, this._merger, 0, 0);
+                this.disposed = true;
             }
-            // W-channel is not involved in rotation, skip straight to ouput.
-            this._splitter.disconnect(this._merger, 0, 0);
         }
         /**
          * Updates the rotation matrix with 3x3 matrix.
@@ -7639,6 +5929,7 @@
          * Omnitone HOA renderer class. Uses the optimized convolution technique.
          */
         constructor(context, options) {
+            this.disposed = false;
             this.context = context;
             this.config = Object.assign({
                 ambisonicOrder: 3,
@@ -7670,24 +5961,27 @@
             this.rotator = new HOARotator(this.context, this.config.ambisonicOrder);
             this.convolver =
                 new HOAConvolver(this.context, this.config.ambisonicOrder);
-            this.input.connect(this.rotator.input);
-            this.input.connect(this.bypass);
-            this.rotator.output.connect(this.convolver.input);
-            this.convolver.output.connect(this.output);
+            connect(this.input, this.rotator.input);
+            connect(this.input, this.bypass);
+            connect(this.rotator.output, this.convolver.input);
+            connect(this.convolver.output, this.output);
             this.input.channelCount = this.config.numberOfChannels;
             this.input.channelCountMode = 'explicit';
             this.input.channelInterpretation = 'discrete';
         }
         dispose() {
-            if (this.getRenderingMode() === RenderingMode.Bypass) {
-                this.bypass.connect(this.output);
+            if (!this.disposed) {
+                if (this.getRenderingMode() === RenderingMode.Bypass) {
+                    disconnect(this.bypass, this.output);
+                }
+                disconnect(this.input, this.rotator.input);
+                disconnect(this.input, this.bypass);
+                disconnect(this.rotator.output, this.convolver.input);
+                disconnect(this.convolver.output, this.output);
+                this.rotator.dispose();
+                this.convolver.dispose();
+                this.disposed = true;
             }
-            this.input.disconnect(this.rotator.input);
-            this.input.disconnect(this.bypass);
-            this.rotator.output.disconnect(this.convolver.input);
-            this.convolver.output.disconnect(this.output);
-            this.rotator.dispose();
-            this.convolver.dispose();
         }
         /**
          * Initializes and loads the resource for the renderer.
@@ -7742,20 +6036,17 @@
             if (mode === this.config.renderingMode) {
                 return;
             }
-            switch (mode) {
-                case RenderingMode.Ambisonic:
-                    this.convolver.enable();
-                    this.bypass.disconnect();
-                    break;
-                case RenderingMode.Bypass:
-                    this.convolver.disable();
-                    this.bypass.connect(this.output);
-                    break;
-                case RenderingMode.None:
-                    this.convolver.disable();
-                    this.bypass.disconnect();
-                    break;
-                default: assertNever(mode);
+            if (mode === RenderingMode.Ambisonic) {
+                this.convolver.enable;
+            }
+            else {
+                this.convolver.disable();
+            }
+            if (mode === RenderingMode.Bypass) {
+                connect(this.bypass, this.output);
+            }
+            else {
+                disconnect(this.bypass, this.output);
             }
             this.config.renderingMode = mode;
         }
@@ -7814,6 +6105,7 @@
          * Listener model to spatialize sources in an environment.
          */
         constructor(context, options) {
+            this.disposed = false;
             // Use defaults for undefined arguments.
             options = Object.assign({
                 ambisonicOrder: DEFAULT_AMBISONIC_ORDER,
@@ -7849,29 +6141,32 @@
             // Initialize Omnitone (async) and connect to audio graph when complete.
             this.renderer.initialize().then(() => {
                 // Connect pre-rotated soundfield to renderer.
-                this.input.connect(this.renderer.input);
+                connect(this.input, this.renderer.input);
                 // Connect rotated soundfield to ambisonic output.
-                this.renderer.rotator.output.connect(this.ambisonicOutput);
+                connect(this.renderer.rotator.output, this.ambisonicOutput);
                 // Connect binaurally-rendered soundfield to binaural output.
-                this.renderer.output.connect(this.output);
+                connect(this.renderer.output, this.output);
             });
             // Set orientation and update rotation matrix accordingly.
             this.setOrientation(options.forward, options.up);
+        }
+        dispose() {
+            if (!this.disposed) {
+                // Connect pre-rotated soundfield to renderer.
+                disconnect(this.input, this.renderer.input);
+                // Connect rotated soundfield to ambisonic output.
+                disconnect(this.renderer.rotator.output, this.ambisonicOutput);
+                // Connect binaurally-rendered soundfield to binaural output.
+                disconnect(this.renderer.output, this.output);
+                this.renderer.dispose();
+                this.disposed = true;
+            }
         }
         getRenderingMode() {
             return this.renderer.getRenderingMode();
         }
         setRenderingMode(mode) {
             this.renderer.setRenderingMode(mode);
-        }
-        dispose() {
-            // Connect pre-rotated soundfield to renderer.
-            this.input.disconnect(this.renderer.input);
-            // Connect rotated soundfield to ambisonic output.
-            this.renderer.rotator.output.disconnect(this.ambisonicOutput);
-            // Connect binaurally-rendered soundfield to binaural output.
-            this.renderer.output.disconnect(this.output);
-            this.renderer.dispose();
         }
         /**
          * Set the source's orientation using forward and up vectors.
@@ -7926,11 +6221,12 @@
                 height: 0.5 * DEFAULT_ROOM_DIMENSIONS.height,
                 depth: 0.5 * DEFAULT_ROOM_DIMENSIONS.depth,
             };
+            this.disposed = false;
             if (options) {
-                if (isGoodNumber(options?.speedOfSound)) {
+                if (isGoodNumber(options.speedOfSound)) {
                     this.speedOfSound = options.speedOfSound;
                 }
-                if (isArray(options?.listenerPosition)
+                if (isArray(options.listenerPosition)
                     && options.listenerPosition.length === 3
                     && isGoodNumber(options.listenerPosition[0])
                     && isGoodNumber(options.listenerPosition[1])
@@ -7974,9 +6270,9 @@
                 gain.gain.value = 0;
                 this.delays[direction] = delay;
                 this.gains[direction] = gain;
-                this.lowpass.connect(delay);
-                delay.connect(gain);
-                gain.connect(this.merger, 0, 0);
+                connect(this.lowpass, delay);
+                connect(delay, gain);
+                connect(gain, this.merger, 0, 0);
                 // Initialize inverters for opposite walls ('right', 'down', 'back' only).
                 if (direction === Direction.Right
                     || direction == Direction.Back
@@ -7984,7 +6280,7 @@
                     this.inverters[direction].gain.value = -1;
                 }
             }
-            this.input.connect(this.lowpass);
+            connect(this.input, this.lowpass);
             // Initialize lowpass filter.
             this.lowpass.type = 'lowpass';
             this.lowpass.frequency.value = DEFAULT_REFLECTION_CUTOFF_FREQUENCY;
@@ -7997,18 +6293,49 @@
             // Down: [1 0 -1 0]
             // Front: [1 0 0 1]
             // Back: [1 0 0 -1]
-            this.gains.left.connect(this.merger, 0, 1);
-            this.gains.right.connect(this.inverters.right);
-            this.inverters.right.connect(this.merger, 0, 1);
-            this.gains.up.connect(this.merger, 0, 2);
-            this.gains.down.connect(this.inverters.down);
-            this.inverters.down.connect(this.merger, 0, 2);
-            this.gains.front.connect(this.merger, 0, 3);
-            this.gains.back.connect(this.inverters.back);
-            this.inverters.back.connect(this.merger, 0, 3);
-            this.merger.connect(this.output);
+            connect(this.gains.left, this.merger, 0, 1);
+            connect(this.gains.right, this.inverters.right);
+            connect(this.inverters.right, this.merger, 0, 1);
+            connect(this.gains.up, this.merger, 0, 2);
+            connect(this.gains.down, this.inverters.down);
+            connect(this.inverters.down, this.merger, 0, 2);
+            connect(this.gains.front, this.merger, 0, 3);
+            connect(this.gains.back, this.inverters.back);
+            connect(this.inverters.back, this.merger, 0, 3);
+            connect(this.merger, this.output);
             // Initialize.
-            this.setRoomProperties(options?.dimensions, options?.coefficients);
+            this.setRoomProperties(options && options.dimensions, options && options.coefficients);
+        }
+        dispose() {
+            if (!this.disposed) {
+                // Connect nodes.
+                disconnect(this.input, this.lowpass);
+                for (const property of Object.values(Direction)) {
+                    const delay = this.delays[property];
+                    const gain = this.gains[property];
+                    disconnect(this.lowpass, delay);
+                    disconnect(delay, gain);
+                    disconnect(gain, this.merger, 0, 0);
+                }
+                // Connect gains to ambisonic channel output.
+                // Left: [1 1 0 0]
+                // Right: [1 -1 0 0]
+                // Up: [1 0 1 0]
+                // Down: [1 0 -1 0]
+                // Front: [1 0 0 1]
+                // Back: [1 0 0 -1]
+                disconnect(this.gains.left, this.merger, 0, 1);
+                disconnect(this.gains.right, this.inverters.right);
+                disconnect(this.inverters.right, this.merger, 0, 1);
+                disconnect(this.gains.up, this.merger, 0, 2);
+                disconnect(this.gains.down, this.inverters.down);
+                disconnect(this.inverters.down, this.merger, 0, 2);
+                disconnect(this.gains.front, this.merger, 0, 3);
+                disconnect(this.gains.back, this.inverters.back);
+                disconnect(this.inverters.back, this.merger, 0, 3);
+                disconnect(this.merger, this.output);
+                this.disposed = true;
+            }
         }
         /**
          * Set the room's properties which determines the characteristics of
@@ -8022,7 +6349,7 @@
          * DEFAULT_REFLECTION_COEFFICIENTS}.
          */
         setRoomProperties(dimensions, coefficients) {
-            if (dimensions == undefined) {
+            if (!dimensions) {
                 dimensions = {
                     width: DEFAULT_ROOM_DIMENSIONS.width,
                     height: DEFAULT_ROOM_DIMENSIONS.height,
@@ -8036,7 +6363,7 @@
                 this.halfDimensions.height = 0.5 * dimensions.height;
                 this.halfDimensions.depth = 0.5 * dimensions.depth;
             }
-            if (coefficients == undefined) {
+            if (!coefficients) {
                 coefficients = {
                     left: DEFAULT_REFLECTION_COEFFICIENTS.left,
                     right: DEFAULT_REFLECTION_COEFFICIENTS.right,
@@ -8061,34 +6388,6 @@
             }
             // Update listener position with new room properties.
             this.setListenerPosition(this.listenerPosition);
-        }
-        dispose() {
-            // Connect nodes.
-            this.input.disconnect(this.lowpass);
-            for (const property of Object.values(Direction)) {
-                const delay = this.delays[property];
-                const gain = this.gains[property];
-                this.lowpass.disconnect(delay);
-                delay.disconnect(gain);
-                gain.disconnect(this.merger, 0, 0);
-            }
-            // Connect gains to ambisonic channel output.
-            // Left: [1 1 0 0]
-            // Right: [1 -1 0 0]
-            // Up: [1 0 1 0]
-            // Down: [1 0 -1 0]
-            // Front: [1 0 0 1]
-            // Back: [1 0 0 -1]
-            this.gains.left.disconnect(this.merger, 0, 1);
-            this.gains.right.disconnect(this.inverters.right);
-            this.inverters.right.disconnect(this.merger, 0, 1);
-            this.gains.up.disconnect(this.merger, 0, 2);
-            this.gains.down.disconnect(this.inverters.down);
-            this.inverters.down.disconnect(this.merger, 0, 2);
-            this.gains.front.disconnect(this.merger, 0, 3);
-            this.gains.back.disconnect(this.inverters.back);
-            this.inverters.back.disconnect(this.merger, 0, 3);
-            this.merger.disconnect(this.output);
         }
         /**
          * Set the listener's position (in meters),
@@ -8136,6 +6435,7 @@
         * Late-reflections reverberation filter for Ambisonic content.
         */
         constructor(context, options) {
+            this.disposed = false;
             // Use defaults for undefined arguments.
             options = Object.assign({
                 durations: DEFAULT_REVERB_DURATIONS.slice(),
@@ -8159,16 +6459,19 @@
             // Disable normalization.
             this.convolver.normalize = false;
             // Connect nodes.
-            this.input.connect(this.predelay);
-            this.predelay.connect(this.convolver);
-            this.convolver.connect(this.output);
+            connect(this.input, this.predelay);
+            connect(this.predelay, this.convolver);
+            connect(this.convolver, this.output);
             // Compute IR using RT60 values.
             this.setDurations(options.durations);
         }
         dispose() {
-            this.input.disconnect(this.predelay);
-            this.predelay.disconnect(this.convolver);
-            this.convolver.disconnect(this.output);
+            if (!this.disposed) {
+                disconnect(this.input, this.predelay);
+                disconnect(this.predelay, this.convolver);
+                disconnect(this.convolver, this.output);
+                this.disposed = true;
+            }
         }
         /**
          * Re-compute a new impulse response by providing Multiband RT60 durations.
@@ -8454,15 +6757,15 @@
             this.speedOfSound = options.speedOfSound;
             // Construct auxillary audio nodes.
             this.output = context.createGain();
-            this.early.output.connect(this.output);
+            connect(this.early.output, this.output);
             this._merger = context.createChannelMerger(4);
-            this.late.output.connect(this._merger, 0, 0);
-            this._merger.connect(this.output);
+            connect(this.late.output, this._merger, 0, 0);
+            connect(this._merger, this.output);
         }
         dispose() {
-            this.early.output.disconnect(this.output);
-            this.late.output.disconnect(this._merger, 0, 0);
-            this._merger.disconnect(this.output);
+            disconnect(this.early.output, this.output);
+            disconnect(this.late.output, this._merger, 0, 0);
+            disconnect(this._merger, this.output);
         }
         /**
          * Set the room's dimensions and wall materials.
@@ -8765,27 +7068,28 @@
                 sourceWidth: options.sourceWidth,
             });
             // Connect nodes.
-            this.input.connect(this.toLate);
-            this.toLate.connect(scene.room.late.input);
-            this.input.connect(this.attenuation.input);
-            this.attenuation.output.connect(this.toEarly);
-            this.toEarly.connect(scene.room.early.input);
-            this.attenuation.output.connect(this.directivity.input);
-            this.directivity.output.connect(this.encoder.input);
-            this.encoder.output.connect(scene.listener.input);
+            connect(this.input, this.toLate);
+            connect(this.toLate, scene.room.late.input);
+            connect(this.input, this.attenuation.input);
+            connect(this.attenuation.output, this.toEarly);
+            connect(this.toEarly, scene.room.early.input);
+            connect(this.attenuation.output, this.directivity.input);
+            connect(this.directivity.output, this.encoder.input);
             // Assign initial conditions.
             this.setPosition(options.position);
             this.input.gain.value = options.gain;
         }
+        get output() {
+            return this.encoder.output;
+        }
         dispose() {
-            this.encoder.output.disconnect(this.scene.listener.input);
-            this.directivity.output.disconnect(this.encoder.input);
-            this.attenuation.output.disconnect(this.directivity.input);
-            this.toEarly.disconnect(this.scene.room.early.input);
-            this.attenuation.output.disconnect(this.toEarly);
-            this.input.disconnect(this.attenuation.input);
-            this.toLate.disconnect(this.scene.room.late.input);
-            this.input.disconnect(this.toLate);
+            disconnect(this.directivity.output, this.encoder.input);
+            disconnect(this.attenuation.output, this.directivity.input);
+            disconnect(this.toEarly, this.scene.room.early.input);
+            disconnect(this.attenuation.output, this.toEarly);
+            disconnect(this.input, this.attenuation.input);
+            disconnect(this.toLate, this.scene.room.late.input);
+            disconnect(this.input, this.toLate);
             this.encoder.dispose();
         }
         // Update the source when changing the listener's position.
@@ -8900,6 +7204,7 @@
          * Options for constructing a new ResonanceAudio scene.
          */
         constructor(context, options) {
+            this.disposed = false;
             // Use defaults for undefined arguments.
             options = Object.assign({
                 ambisonicOrder: DEFAULT_AMBISONIC_ORDER,
@@ -8933,9 +7238,9 @@
             this.ambisonicOutput = context.createGain();
             this.ambisonicInput = this.listener.input;
             // Connect audio graph.
-            this.room.output.connect(this.listener.input);
-            this.listener.output.connect(this.output);
-            this.listener.ambisonicOutput.connect(this.ambisonicOutput);
+            connect(this.room.output, this.listener.input);
+            connect(this.listener.output, this.output);
+            connect(this.listener.ambisonicOutput, this.ambisonicOutput);
         }
         getRenderingMode() {
             return this.listener.getRenderingMode();
@@ -8944,9 +7249,12 @@
             this.listener.setRenderingMode(mode);
         }
         dispose() {
-            this.room.output.disconnect(this.listener.input);
-            this.listener.output.disconnect(this.output);
-            this.listener.ambisonicOutput.disconnect(this.ambisonicOutput);
+            if (!this.disposed) {
+                disconnect(this.room.output, this.listener.input);
+                disconnect(this.listener.output, this.output);
+                disconnect(this.listener.ambisonicOutput, this.ambisonicOutput);
+                this.disposed = true;
+            }
         }
         /**
          * Create a new source for the scene.
@@ -8968,7 +7276,7 @@
         removeSource(source) {
             const sourceIdx = this._sources.findIndex((s) => s === source);
             if (sourceIdx > -1) {
-                this._sources.splice(sourceIdx, 1);
+                arrayRemoveAt(this._sources, sourceIdx);
                 source.dispose();
             }
         }
@@ -9014,45 +7322,24 @@
         }
     }
 
-    class BaseWebAudioNode extends BaseNode {
-        /**
-         * Creates a spatializer that keeps track of the relative position
-         * of an audio element to the listener destination.
-         * @param id
-         * @param stream
-         * @param audioContext - the output WebAudio context
-         * @param node - this node out to which to pipe the stream
-         */
-        constructor(id, source, audioContext, node) {
-            super(id, source, audioContext);
-            this.node = node;
-            this.gain.connect(this.node);
-        }
-        /**
-         * Discard values and make this instance useless.
-         */
-        dispose() {
-            if (this.node) {
-                this.node.disconnect();
-                this.node = null;
-            }
-            super.dispose();
-        }
-    }
-
     /**
      * A spatializer that uses Google's Resonance Audio library.
      **/
-    class ResonanceAudioNode extends BaseWebAudioNode {
+    class ResonanceAudioNode extends BaseEmitter {
         /**
          * Creates a new spatializer that uses Google's Resonance Audio library.
          */
-        constructor(id, source, audioContext, res) {
-            const resNode = res.createSource(undefined);
-            super(id, source, audioContext, resNode.input);
+        constructor(audioContext, destination, res) {
+            super(audioContext, destination);
             this.resScene = res;
-            this.resNode = resNode;
+            this.resNode = res.createSource(undefined);
+            this.input = this.resNode.input;
+            this.output = this.resNode.output;
+            connect(this.output, this.destination);
             Object.seal(this);
+        }
+        createNew() {
+            return new ResonanceAudioNode(this.audioContext, this.destination, this.resScene);
         }
         /**
          * Performs the spatialization operation for the audio source's latest location.
@@ -9082,42 +7369,6 @@
         }
     }
 
-    class NoSpatializationNode extends BaseNode {
-        /**
-         * Creates a new "spatializer" that performs no panning. An anti-spatializer.
-         */
-        constructor(id, source, audioContext, destination) {
-            super(id, source, audioContext);
-            this.gain.connect(destination);
-            Object.seal(this);
-        }
-        update(_loc, _t) {
-            // do nothing
-        }
-    }
-
-    /**
-     * Base class providing functionality for audio listeners.
-     **/
-    class BaseListener extends BaseSpatializer {
-        /**
-         * Creates a spatializer that keeps track of position
-         */
-        constructor(audioContext, destination) {
-            super(audioContext);
-            this.gain.connect(destination);
-        }
-        /**
-         * Creates a spatialzer for an audio source.
-         */
-        createSpatializer(id, source, spatialize, audioContext) {
-            if (spatialize) {
-                throw new Error("Can't spatialize with the base listener.");
-            }
-            return new NoSpatializationNode(id, source, audioContext, this.gain);
-        }
-    }
-
     /**
      * An audio positioner that uses Google's Resonance Audio library
      **/
@@ -9125,14 +7376,14 @@
         /**
          * Creates a new audio positioner that uses Google's Resonance Audio library
          */
-        constructor(audioContext, destination) {
-            super(audioContext, destination);
-            this.scene = new ResonanceAudio(audioContext, {
+        constructor(audioContext) {
+            super(audioContext);
+            this.disposed = false;
+            const scene = new ResonanceAudio(audioContext, {
                 ambisonicOrder: 1,
                 renderingMode: RenderingMode.Bypass
             });
-            this.scene.output.connect(this.gain);
-            this.scene.setRoomProperties({
+            scene.setRoomProperties({
                 width: 10,
                 height: 5,
                 depth: 10,
@@ -9144,7 +7395,19 @@
                 [Direction.Down]: Material.Grass,
                 [Direction.Up]: Material.Transparent,
             });
+            this.input = scene.listener.input;
+            this.output = scene.output;
+            this.scene = scene;
             Object.seal(this);
+        }
+        dispose() {
+            if (!this.disposed) {
+                if (this.scene) {
+                    this.scene.dispose();
+                }
+                super.dispose();
+                this.disposed = true;
+            }
         }
         /**
          * Performs the spatialization operation for the audio source's latest location.
@@ -9157,26 +7420,32 @@
         /**
          * Creates a spatialzer for an audio source.
          */
-        createSpatializer(id, source, spatialize, audioContext) {
+        createSpatializer(spatialize, audioContext, destination) {
             if (spatialize) {
-                return new ResonanceAudioNode(id, source, audioContext, this.scene);
+                return new ResonanceAudioNode(audioContext, destination.spatializedInput, this.scene);
             }
             else {
-                return super.createSpatializer(id, source, spatialize, audioContext);
+                return super.createSpatializer(spatialize, audioContext, destination);
             }
         }
     }
 
     const delta$1 = create$2();
-    class VolumeScalingNode extends BaseNode {
+    class VolumeScalingNode extends BaseEmitter {
         /**
          * Creates a new spatializer that performs no panning, only distance-based volume scaling
          */
-        constructor(id, source, audioContext, destination, listener) {
-            super(id, source, audioContext);
+        constructor(audioContext, destination, listener) {
+            super(audioContext, destination);
+            const gain = audioContext.createGain();
+            this.input = this.output = gain;
+            this.gain = gain;
             this.listener = listener;
-            this.gain.connect(destination);
+            connect(this.output, this.destination);
             Object.seal(this);
+        }
+        createNew() {
+            return new VolumeScalingNode(this.audioContext, this.destination, this.listener);
         }
         update(loc, t) {
             const p = this.listener.pose.p;
@@ -9198,27 +7467,27 @@
         /**
          * Creates a new positioner that uses WebAudio's playback dependent time progression.
          */
-        constructor(audioContext, destination) {
-            super(audioContext, destination);
-            this.pose = null;
-            this.gain.gain.value = 0.25;
-            Object.seal(this);
+        constructor(audioContext) {
+            super(audioContext);
+            const gain = audioContext.createGain();
+            this.input = this.output = gain;
+            this.pose = new Pose();
         }
         /**
          * Performs the spatialization operation for the audio source's latest location.
          */
         update(loc, _t) {
-            this.pose = loc;
+            this.pose.copy(loc);
         }
         /**
          * Creates a spatialzer for an audio source.
          */
-        createSpatializer(id, source, spatialize, audioContext) {
+        createSpatializer(spatialize, audioContext, destination) {
             if (spatialize) {
-                return new VolumeScalingNode(id, source, audioContext, this.gain, this);
+                return new VolumeScalingNode(audioContext, destination.spatializedInput, this);
             }
             else {
-                return super.createSpatializer(id, source, spatialize, audioContext);
+                return super.createSpatializer(spatialize, audioContext, destination);
             }
         }
     }
@@ -9226,34 +7495,41 @@
     /**
      * Base class for spatializers that uses WebAudio's PannerNode
      **/
-    class BaseWebAudioPanner extends BaseWebAudioNode {
+    class BaseWebAudioPanner extends BaseEmitter {
         /**
          * Creates a new spatializer that uses WebAudio's PannerNode.
-         * @param id
-         * @param stream
          * @param audioContext - the output WebAudio context
          */
-        constructor(id, source, audioContext, destination) {
-            const panner = audioContext.createPanner();
-            super(id, source, audioContext, panner);
-            this.node.panningModel = "HRTF";
-            this.node.distanceModel = "inverse";
-            this.node.coneInnerAngle = 360;
-            this.node.coneOuterAngle = 0;
-            this.node.coneOuterGain = 0;
-            this.node.connect(destination);
+        constructor(audioContext, destination) {
+            super(audioContext, destination);
+            this.panner = audioContext.createPanner();
+            this.panner.panningModel = "HRTF";
+            this.panner.distanceModel = "inverse";
+            this.panner.coneInnerAngle = 360;
+            this.panner.coneOuterAngle = 0;
+            this.panner.coneOuterGain = 0;
+            this.input = this.output = this.panner;
+            connect(this.output, this.destination);
+        }
+        copyAudioProperties(from) {
+            super.copyAudioProperties(from);
+            this.panner.panningModel = from.panner.panningModel;
+            this.panner.distanceModel = from.panner.distanceModel;
+            this.panner.coneInnerAngle = from.panner.coneInnerAngle;
+            this.panner.coneOuterAngle = from.panner.coneOuterAngle;
+            this.panner.coneOuterGain = from.panner.coneOuterGain;
         }
         /**
          * Sets parameters that alter spatialization.
          **/
         setAudioProperties(minDistance, maxDistance, rolloff, algorithm, transitionTime) {
             super.setAudioProperties(minDistance, maxDistance, rolloff, algorithm, transitionTime);
-            this.node.refDistance = this.minDistance;
+            this.panner.refDistance = this.minDistance;
             if (this.algorithm === "logarithmic") {
                 algorithm = "inverse";
             }
-            this.node.distanceModel = algorithm;
-            this.node.rolloffFactor = this.rolloff;
+            this.panner.distanceModel = algorithm;
+            this.panner.rolloffFactor = this.rolloff;
         }
     }
 
@@ -9264,21 +7540,24 @@
         /**
          * Creates a new positioner that uses WebAudio's playback dependent time progression.
          */
-        constructor(id, source, audioContext, destination) {
-            super(id, source, audioContext, destination);
+        constructor(audioContext, destination) {
+            super(audioContext, destination);
             Object.seal(this);
+        }
+        createNew() {
+            return new WebAudioPannerNew(this.audioContext, this.destination);
         }
         /**
          * Performs the spatialization operation for the audio source's latest location.
          */
         update(loc, t) {
             const { p, f } = loc;
-            this.node.positionX.setValueAtTime(p[0], t);
-            this.node.positionY.setValueAtTime(p[1], t);
-            this.node.positionZ.setValueAtTime(p[2], t);
-            this.node.orientationX.setValueAtTime(-f[0], t);
-            this.node.orientationY.setValueAtTime(-f[1], t);
-            this.node.orientationZ.setValueAtTime(-f[2], t);
+            this.panner.positionX.setValueAtTime(p[0], t);
+            this.panner.positionY.setValueAtTime(p[1], t);
+            this.panner.positionZ.setValueAtTime(p[2], t);
+            this.panner.orientationX.setValueAtTime(-f[0], t);
+            this.panner.orientationY.setValueAtTime(-f[1], t);
+            this.panner.orientationZ.setValueAtTime(-f[2], t);
         }
     }
 
@@ -9289,14 +7568,20 @@
         /**
          * Creates a new spatializer that uses WebAudio's PannerNode.
          */
-        constructor(audioContext, destination) {
-            super(audioContext, destination);
-            this.node = audioContext.listener;
-            this.volume = 0.75;
+        constructor(audioContext) {
+            super(audioContext);
+            this.disposed2 = false;
+            const gain = audioContext.createGain();
+            gain.gain.value = 0.75;
+            this.input = this.output = gain;
+            this.listener = audioContext.listener;
         }
         dispose() {
-            this.node = null;
-            super.dispose();
+            if (!this.disposed2) {
+                this.listener = null;
+                super.dispose();
+                this.disposed2 = true;
+            }
         }
     }
 
@@ -9307,8 +7592,8 @@
         /**
          * Creates a new positioner that uses WebAudio's playback dependent time progression.
          */
-        constructor(audioContext, destination) {
-            super(audioContext, destination);
+        constructor(audioContext) {
+            super(audioContext);
             Object.seal(this);
         }
         /**
@@ -9316,25 +7601,25 @@
          */
         update(loc, t) {
             const { p, f, u } = loc;
-            this.node.positionX.setValueAtTime(p[0], t);
-            this.node.positionY.setValueAtTime(p[1], t);
-            this.node.positionZ.setValueAtTime(p[2], t);
-            this.node.forwardX.setValueAtTime(f[0], t);
-            this.node.forwardY.setValueAtTime(f[1], t);
-            this.node.forwardZ.setValueAtTime(f[2], t);
-            this.node.upX.setValueAtTime(u[0], t);
-            this.node.upY.setValueAtTime(u[1], t);
-            this.node.upZ.setValueAtTime(u[2], t);
+            this.listener.positionX.setValueAtTime(p[0], t);
+            this.listener.positionY.setValueAtTime(p[1], t);
+            this.listener.positionZ.setValueAtTime(p[2], t);
+            this.listener.forwardX.setValueAtTime(f[0], t);
+            this.listener.forwardY.setValueAtTime(f[1], t);
+            this.listener.forwardZ.setValueAtTime(f[2], t);
+            this.listener.upX.setValueAtTime(u[0], t);
+            this.listener.upY.setValueAtTime(u[1], t);
+            this.listener.upZ.setValueAtTime(u[2], t);
         }
         /**
          * Creates a spatialzer for an audio source.
          */
-        createSpatializer(id, source, spatialize, audioContext) {
+        createSpatializer(spatialize, audioContext, destination) {
             if (spatialize) {
-                return new WebAudioPannerNew(id, source, audioContext, this.gain);
+                return new WebAudioPannerNew(audioContext, destination.spatializedInput);
             }
             else {
-                return super.createSpatializer(id, source, spatialize, audioContext);
+                return super.createSpatializer(spatialize, audioContext, destination);
             }
         }
     }
@@ -9346,17 +7631,20 @@
         /**
          * Creates a new positioner that uses the WebAudio API's old setPosition method.
          */
-        constructor(id, source, audioContext, destination) {
-            super(id, source, audioContext, destination);
+        constructor(audioContext, destination) {
+            super(audioContext, destination);
             Object.seal(this);
+        }
+        createNew() {
+            return new WebAudioPannerOld(this.audioContext, this.destination);
         }
         /**
          * Performs the spatialization operation for the audio source's latest location.
          */
         update(loc, _t) {
             const { p, f } = loc;
-            this.node.setPosition(p[0], p[1], p[2]);
-            this.node.setOrientation(f[0], f[1], f[2]);
+            this.panner.setPosition(p[0], p[1], p[2]);
+            this.panner.setOrientation(f[0], f[1], f[2]);
         }
     }
 
@@ -9367,8 +7655,8 @@
         /**
          * Creates a new positioner that uses WebAudio's playback dependent time progression.
          */
-        constructor(audioContext, destination) {
-            super(audioContext, destination);
+        constructor(audioContext) {
+            super(audioContext);
             Object.seal(this);
         }
         /**
@@ -9376,22 +7664,188 @@
          */
         update(loc, _t) {
             const { p, f, u } = loc;
-            this.node.setPosition(p[0], p[1], p[2]);
-            this.node.setOrientation(f[0], f[1], f[2], u[0], u[1], u[2]);
+            this.listener.setPosition(p[0], p[1], p[2]);
+            this.listener.setOrientation(f[0], f[1], f[2], u[0], u[1], u[2]);
         }
         /**
          * Creates a spatialzer for an audio source.
          */
-        createSpatializer(id, source, spatialize, audioContext) {
+        createSpatializer(spatialize, audioContext, destination) {
             if (spatialize) {
-                return new WebAudioPannerOld(id, source, audioContext, this.gain);
+                return new WebAudioPannerOld(audioContext, destination.spatializedInput);
             }
             else {
-                return super.createSpatializer(id, source, spatialize, audioContext);
+                return super.createSpatializer(spatialize, audioContext, destination);
             }
         }
     }
 
+    class BaseAudioSource extends BaseAudioElement {
+        constructor(id, audioContext) {
+            super(audioContext);
+            this.id = id;
+            this.disposed2 = false;
+        }
+        dispose() {
+            if (!this.disposed2) {
+                this.source = null;
+                super.dispose();
+                this.disposed2 = true;
+            }
+        }
+        get spatialized() {
+            return !(this.spatializer instanceof NoSpatializationNode);
+        }
+        get source() {
+            return this._source;
+        }
+        set source(v) {
+            if (v !== this.source) {
+                if (this._source) {
+                    disconnect(this._source, this.volumeControl);
+                }
+                this._source = v;
+                if (this._source) {
+                    connect(this._source, this.volumeControl);
+                }
+            }
+        }
+        disconnectSpatializer() {
+            disconnect(this.volumeControl, this.spatializer.input);
+        }
+        connectSpatializer() {
+            connect(this.volumeControl, this.spatializer.input);
+        }
+    }
+
+    class BaseAudioBufferSource extends BaseAudioSource {
+        constructor(id, audioContext, source, spatializer) {
+            super(id, audioContext);
+            this.source = source;
+            this.spatializer = spatializer;
+        }
+    }
+
+    class AudioBufferSource extends BaseAudioBufferSource {
+        constructor(id, audioContext, source, spatializer) {
+            super(id, audioContext, source, spatializer);
+            this.isPlaying = false;
+            this.disposed3 = false;
+        }
+        async play() {
+            this.source.start();
+            await once(this.source, "ended");
+            this.isPlaying = false;
+        }
+        stop() {
+            this.source.stop();
+        }
+        dispose() {
+            if (!this.disposed3) {
+                this.stop();
+                super.dispose();
+                this.disposed3 = true;
+            }
+        }
+    }
+
+    class AudioBufferSpawningSource extends BaseAudioBufferSource {
+        constructor(id, audioContext, source, spatializer) {
+            super(id, audioContext, source, spatializer);
+            this.counter = 0;
+            this.playingSources = new Array();
+            this.disposed3 = false;
+        }
+        connectSpatializer() {
+            // do nothing, this node doesn't play on its own
+        }
+        disconnectSpatializer() {
+            // do nothing, this node doesn't play on its own
+        }
+        get isPlaying() {
+            for (const source of this.playingSources) {
+                if (source.isPlaying) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        async play() {
+            const newBuffer = this.source.context.createBufferSource();
+            newBuffer.buffer = this.source.buffer;
+            newBuffer.loop = this.source.loop;
+            const newSpatializer = this.spatializer.clone();
+            const newSource = new AudioBufferSource(`${this.id}-${this.counter++}`, this.audioContext, newBuffer, newSpatializer);
+            newSource.spatializer = newSpatializer;
+            this.playingSources.push(newSource);
+            newSource.play();
+            if (!this.source.loop) {
+                await once(newBuffer, "ended");
+                if (this.playingSources.indexOf(newSource) >= 0) {
+                    newSource.dispose();
+                    arrayRemove(this.playingSources, newSource);
+                }
+            }
+        }
+        stop() {
+            for (const source of this.playingSources) {
+                source.dispose();
+            }
+            arrayClear(this.playingSources);
+        }
+        dispose() {
+            if (!this.disposed3) {
+                this.stop();
+                super.dispose();
+                this.disposed3 = true;
+            }
+        }
+    }
+
+    class AudioElementSource extends BaseAudioSource {
+        constructor(id, audioContext, source, spatializer) {
+            super(id, audioContext);
+            this.isPlaying = false;
+            this.disposed3 = false;
+            this.source = source;
+            this.spatializer = spatializer;
+        }
+        async play() {
+            this.isPlaying = true;
+            await this.source.mediaElement.play();
+            if (!this.source.mediaElement.loop) {
+                await once(this.source.mediaElement, "ended");
+                this.isPlaying = false;
+            }
+        }
+        stop() {
+            this.source.mediaElement.pause();
+            this.source.mediaElement.currentTime = 0;
+            this.isPlaying = false;
+        }
+        dispose() {
+            if (!this.disposed3) {
+                if (this.source.mediaElement.parentElement) {
+                    this.source.mediaElement.parentElement.removeChild(this.source.mediaElement);
+                }
+                super.dispose();
+                this.disposed3 = false;
+            }
+        }
+    }
+
+    class AudioStreamSource extends BaseAudioSource {
+        constructor(id, audioContext) {
+            super(id, audioContext);
+            this.streams = new Map();
+        }
+    }
+
+    function BackgroundAudio(autoplay, mute, ...rest) {
+        const elem = Audio(playsInline(true), controls(false), muted(mute), autoPlay(autoplay), styles(display("none")), ...rest);
+        //document.body.appendChild(elem);
+        return elem;
+    }
     if (!("AudioContext" in globalThis) && "webkitAudioContext" in globalThis) {
         globalThis.AudioContext = globalThis.webkitAudioContext;
     }
@@ -9403,7 +7857,7 @@
     const audioReadyEvt = new TypedEvent("audioReady");
     const testAudio = Audio();
     const useTrackSource = "createMediaStreamTrackSource" in AudioContext.prototype;
-    const useElementSource = !useTrackSource && !("createMediaStreamSource" in AudioContext.prototype);
+    const useElementSourceForUsers = !useTrackSource && !("createMediaStreamSource" in AudioContext.prototype);
     const audioTypes = new Map([
         ["wav", ["audio/wav", "audio/vnd.wave", "audio/wave", "audio/x-wav"]],
         ["mp3", ["audio/mpeg"]],
@@ -9440,9 +7894,10 @@
     let attemptResonanceAPI = hasAudioListener;
     var SpatializerType;
     (function (SpatializerType) {
-        SpatializerType["Low"] = "volumescale";
-        SpatializerType["Medium"] = "webaudiopanner";
-        SpatializerType["High"] = "resonance";
+        SpatializerType["None"] = "none";
+        SpatializerType["Low"] = "low";
+        SpatializerType["Medium"] = "medium";
+        SpatializerType["High"] = "high";
     })(SpatializerType || (SpatializerType = {}));
     /**
      * A manager of audio sources, destinations, and their spatialization.
@@ -9451,8 +7906,9 @@
         /**
          * Creates a new manager of audio sources, destinations, and their spatialization.
          **/
-        constructor(fetcher, type) {
+        constructor(fetcher, type, analyzeAudio = false) {
             super();
+            this.analyzeAudio = analyzeAudio;
             this.minDistance = 1;
             this.maxDistance = 10;
             this.rolloff = 1;
@@ -9462,21 +7918,41 @@
             this.clips = new Map();
             this.users = new Map();
             this.analysers = new Map();
-            this.sortedUserIDs = new Array();
             this.localUserID = null;
+            this.sortedUserIDs = new Array();
+            this.localUser = null;
             this.listener = null;
             this.audioContext = null;
             this.element = null;
             this.destination = null;
             this._audioOutputDeviceID = null;
             this.fetcher = fetcher || new Fetcher();
+            this.setLocalUserID(DEFAULT_LOCAL_USER_ID);
+            this.audioContext = new AudioContext();
+            if (canChangeAudioOutput) {
+                this.destination = this.audioContext.createMediaStreamDestination();
+                this.element = Audio(playsInline, autoPlay, srcObject(this.destination.stream), styles(display("none")));
+                document.body.appendChild(this.element);
+            }
+            else {
+                this.destination = this.audioContext.destination;
+            }
+            this.localUser = new AudioDestination(this.audioContext, this.destination);
+            if (this.ready) {
+                this.start();
+            }
+            else {
+                onUserGesture(() => this.dispatchEvent(audioReadyEvt), async () => {
+                    await this.start();
+                    return this.ready;
+                });
+            }
             this.type = type || SpatializerType.Medium;
             this.onAudioActivity = (evt) => {
                 audioActivityEvt$1.id = evt.id;
                 audioActivityEvt$1.isActive = evt.isActive;
                 this.dispatchEvent(audioActivityEvt$1);
             };
-            this.createContext();
             Object.seal(this);
         }
         get offsetRadius() {
@@ -9489,14 +7965,12 @@
         get algorithm() {
             return this._algorithm;
         }
-        addEventListener(type, callback, options = null) {
-            if (type === audioReadyEvt.type
-                && this.ready) {
+        checkAddEventListener(type, callback) {
+            if (type === audioReadyEvt.type && this.ready) {
                 callback(audioReadyEvt);
+                return false;
             }
-            else {
-                super.addEventListener(type, callback, options);
-            }
+            return true;
         }
         get ready() {
             return this.audioContext && this.audioContext.state === "running";
@@ -9512,104 +7986,99 @@
             }
         }
         update() {
-            if (this.audioContext) {
-                const t = this.currentTime;
-                for (const clip of this.clips.values()) {
-                    clip.update(t);
-                }
-                for (const user of this.users.values()) {
-                    user.update(t);
-                }
-                for (const analyser of this.analysers.values()) {
-                    analyser.update();
-                }
+            const t = this.currentTime;
+            this.localUser.update(t);
+            for (const clip of this.clips.values()) {
+                clip.update(t);
+            }
+            for (const user of this.users.values()) {
+                user.update(t);
+            }
+            for (const analyser of this.analysers.values()) {
+                analyser.update();
             }
         }
-        /**
-         * If no audio context is currently available, creates one, and initializes the
-         * spatialization of its listener.
-         *
-         * If WebAudio isn't available, a mock audio context is created that provides
-         * ersatz playback timing.
-         **/
-        createContext() {
-            if (!this.audioContext) {
-                this.audioContext = new AudioContext();
-                if (canChangeAudioOutput) {
-                    this.destination = this.audioContext.createMediaStreamDestination();
-                    this.element = Audio(playsInline, autoPlay, srcObject(this.destination.stream), styles(display("none")));
-                    document.body.appendChild(this.element);
+        get type() {
+            return this._type;
+        }
+        set type(type) {
+            const inputType = type;
+            if (type !== SpatializerType.High
+                && type !== SpatializerType.Medium
+                && type !== SpatializerType.Low
+                && type !== SpatializerType.None) {
+                assertNever(type, "Invalid spatialization type: ");
+            }
+            // These checks are done in an arcane way because it makes the fallback logic
+            // for each step self-contained. It's easier to look at a single step and determine
+            // wether or not it is correct, without having to look at previous blocks of code.
+            if (type === SpatializerType.High) {
+                if (hasAudioContext && hasAudioListener && attemptResonanceAPI) {
+                    try {
+                        this.listener = new ResonanceAudioListener(this.audioContext);
+                    }
+                    catch (exp) {
+                        attemptResonanceAPI = false;
+                        type = SpatializerType.Medium;
+                        console.warn("Resonance Audio API not available!", exp);
+                    }
                 }
                 else {
-                    this.destination = this.audioContext.destination;
+                    type = SpatializerType.Medium;
                 }
-                // These checks are done in an arcane way because it makes the fallback logic
-                // for each step self-contained. It's easier to look at a single step and determine
-                // wether or not it is correct, without having to look at previous blocks of code.
-                if (this.type === SpatializerType.High) {
-                    if (hasAudioContext && hasAudioListener && attemptResonanceAPI) {
+            }
+            if (type === SpatializerType.Medium) {
+                if (hasAudioContext && hasAudioListener) {
+                    if (hasNewAudioListener) {
                         try {
-                            this.listener = new ResonanceAudioListener(this.audioContext, this.destination);
+                            this.listener = new WebAudioListenerNew(this.audioContext);
                         }
                         catch (exp) {
-                            attemptResonanceAPI = false;
-                            this.type = SpatializerType.Medium;
-                            console.warn("Resonance Audio API not available!", exp);
+                            hasNewAudioListener = false;
+                            console.warn("No AudioListener.positionX property!", exp);
                         }
                     }
-                    else {
-                        this.type = SpatializerType.Medium;
-                    }
-                }
-                if (this.type === SpatializerType.Medium) {
-                    if (hasAudioContext && hasAudioListener) {
-                        if (hasNewAudioListener) {
-                            try {
-                                this.listener = new WebAudioListenerNew(this.audioContext, this.destination);
-                            }
-                            catch (exp) {
-                                hasNewAudioListener = false;
-                                console.warn("No AudioListener.positionX property!", exp);
-                            }
+                    if (!hasNewAudioListener && hasOldAudioListener) {
+                        try {
+                            this.listener = new WebAudioListenerOld(this.audioContext);
                         }
-                        if (!hasNewAudioListener && hasOldAudioListener) {
-                            try {
-                                this.listener = new WebAudioListenerOld(this.audioContext, this.destination);
-                            }
-                            catch (exp) {
-                                hasOldAudioListener = false;
-                                console.warn("No WebAudio API!", exp);
-                            }
-                        }
-                        if (!hasNewAudioListener && !hasOldAudioListener) {
-                            this.type = SpatializerType.Low;
-                            hasAudioListener = false;
+                        catch (exp) {
+                            hasOldAudioListener = false;
+                            console.warn("No WebAudio API!", exp);
                         }
                     }
-                    else {
-                        this.type = SpatializerType.Low;
+                    if (!hasNewAudioListener && !hasOldAudioListener) {
+                        type = SpatializerType.Low;
+                        hasAudioListener = false;
                     }
-                }
-                if (this.type === SpatializerType.Low) {
-                    this.listener = new VolumeScalingListener(this.audioContext, this.destination);
-                }
-                if (this.listener === null) {
-                    throw new Error("Calla requires a functioning WebAudio system.");
-                }
-                if (this.ready) {
-                    this.start();
-                    this.dispatchEvent(audioReadyEvt);
                 }
                 else {
-                    onUserGesture(() => this.dispatchEvent(audioReadyEvt), async () => {
-                        await this.start();
-                        return this.ready;
-                    });
+                    type = SpatializerType.Low;
                 }
+            }
+            if (type === SpatializerType.Low) {
+                this.listener = new VolumeScalingListener(this.audioContext);
+            }
+            else if (type === SpatializerType.None) {
+                this.listener = new NoSpatializationListener(this.audioContext);
+            }
+            if (!this.listener) {
+                throw new Error("Calla requires a functioning WebAudio system. Could not create one for type: " + inputType);
+            }
+            else if (type !== inputType) {
+                console.warn(`Wasn't able to create the listener type ${inputType}. Fell back to ${type} instead.`);
+            }
+            this._type = type;
+            this.localUser.spatializer = this.listener;
+            for (const clip of this.clips.values()) {
+                clip.spatializer = this.createSpatializer(clip.spatialized);
+            }
+            for (const user of this.users.values()) {
+                user.spatializer = this.createSpatializer(user.spatialized);
             }
         }
         getAudioOutputDeviceID() {
-            return this.element?.sinkId;
+            return this.element && this.element.sinkId;
         }
         async setAudioOutputDeviceID(deviceID) {
             this._audioOutputDeviceID = deviceID || "";
@@ -9620,15 +8089,11 @@
         }
         /**
          * Creates a spatialzer for an audio source.
-         * @param id
          * @param source - the audio element that is being spatialized.
          * @param spatialize - whether or not the audio stream should be spatialized. Stereo audio streams that are spatialized will get down-mixed to a single channel.
          */
-        createSpatializer(id, source, spatialize) {
-            if (!this.listener) {
-                throw new Error("Audio context isn't ready");
-            }
-            return this.listener.createSpatializer(id, source, spatialize, this.audioContext);
+        createSpatializer(spatialize) {
+            return this.listener.createSpatializer(spatialize, this.audioContext, this.localUser);
         }
         /**
          * Gets the current playback time.
@@ -9642,7 +8107,7 @@
         createUser(id) {
             let user = this.users.get(id);
             if (!user) {
-                user = new AudioSource(id);
+                user = new AudioStreamSource(id, this.audioContext);
                 this.users.set(id, user);
                 arraySortedInsert(this.sortedUserIDs, id);
                 this.updateUserOffsets();
@@ -9652,33 +8117,19 @@
         /**
          * Create a new user for the audio listener.
          */
-        createLocalUser(id) {
-            this.localUserID = id;
-            let oldID = null;
-            let user = null;
-            for (const entry of this.users.entries()) {
-                if (entry[1].spatializer === this.listener) {
-                    [oldID, user] = entry;
-                    break;
-                }
-            }
-            if (user) {
-                this.users.delete(oldID);
-                arrayRemove(this.sortedUserIDs, oldID);
-                this.users.set(id, user);
-                arraySortedInsert(this.sortedUserIDs, id);
+        setLocalUserID(id) {
+            if (this.localUser) {
+                arrayRemove(this.sortedUserIDs, this.localUserID);
+                this.localUserID = id;
+                arraySortedInsert(this.sortedUserIDs, this.localUserID);
                 this.updateUserOffsets();
             }
-            else {
-                user = this.createUser(id);
-                user.spatializer = this.listener;
-            }
-            return user;
+            return this.localUser;
         }
         /**
          * Creates a new sound effect from a series of fallback paths
          * for media files.
-         * @param name - the name of the sound effect, to reference when executing playback.
+         * @param id - the name of the sound effect, to reference when executing playback.
          * @param looping - whether or not the sound effect should be played on loop.
          * @param autoPlaying - whether or not the sound effect should be played immediately.
          * @param spatialize - whether or not the sound effect should be spatialized.
@@ -9686,10 +8137,32 @@
          * @param path - a path for loading the media of the sound effect.
          * @param onProgress - an optional callback function to use for tracking progress of loading the clip.
          */
-        async createClip(name, looping, autoPlaying, spatialize, vol, path, onProgress) {
+        async createClip(id, looping, autoPlaying, spatialize, vol, path, onProgress) {
             if (path == null || path.length === 0) {
                 throw new Error("No clip source path provided");
             }
+            const clip = await this.createAudioElementSource(id, looping, autoPlaying, spatialize, path, onProgress)
+                ;
+            clip.volume = vol;
+            this.clips.set(id, clip);
+            return clip;
+        }
+        async createAudioElementSource(id, looping, autoPlaying, spatialize, path, onProgress) {
+            if (onProgress) {
+                onProgress(0, 1);
+            }
+            const elem = BackgroundAudio(autoPlaying, false);
+            const task = once(elem, "canplaythrough");
+            elem.loop = looping;
+            elem.src = await this.fetcher.getFile(path, null, onProgress);
+            await task;
+            const source = this.audioContext.createMediaElementSource(elem);
+            if (onProgress) {
+                onProgress(1, 1);
+            }
+            return new AudioElementSource("audio-clip-" + id, this.audioContext, source, this.createSpatializer(spatialize));
+        }
+        async createAudioBufferSource(id, looping, autoPlaying, spatialize, path, onProgress) {
             let goodBlob = null;
             if (!shouldTry(path)) {
                 if (onProgress) {
@@ -9697,7 +8170,7 @@
                 }
             }
             else {
-                const blob = await this.fetcher.getBlob(path, onProgress);
+                const blob = await this.fetcher.getBlob(path, null, onProgress);
                 if (testAudio.canPlayType(blob.type)) {
                     goodBlob = blob;
                 }
@@ -9710,13 +8183,10 @@
             const source = this.audioContext.createBufferSource();
             source.buffer = data;
             source.loop = looping;
-            const clip = new AudioSource("audio-clip-" + name);
-            clip.spatializer = this.createSpatializer(name, source, spatialize);
-            clip.spatializer.volume = vol;
+            const clip = new AudioBufferSpawningSource("audio-clip-" + id, this.audioContext, source, this.createSpatializer(spatialize));
             if (autoPlaying) {
-                clip.spatializer.play();
+                clip.play();
             }
-            this.clips.set(name, clip);
             return clip;
         }
         hasClip(name) {
@@ -9729,34 +8199,34 @@
         async playClip(name) {
             if (this.ready && this.hasClip(name)) {
                 const clip = this.clips.get(name);
-                await clip.spatializer.play();
+                await clip.play();
             }
         }
         stopClip(name) {
             if (this.ready && this.hasClip(name)) {
                 const clip = this.clips.get(name);
-                clip.spatializer.stop();
+                clip.stop();
             }
-        }
-        /**
-         * Get an audio source.
-         * @param sources - the collection of audio sources from which to retrieve.
-         * @param id - the id of the audio source to get
-         **/
-        getSource(sources, id) {
-            return sources.get(id) || null;
         }
         /**
          * Get an existing user.
          */
         getUser(id) {
-            return this.getSource(this.users, id);
+            return this.users.get(id);
         }
         /**
          * Get an existing audio clip.
          */
         getClip(id) {
-            return this.getSource(this.clips, id);
+            return this.clips.get(id);
+        }
+        renameClip(id, newID) {
+            const clip = this.clips.get(id);
+            if (clip) {
+                clip.id = "audio-clip-" + id;
+                this.clips.delete(id);
+                this.clips.set(newID, clip);
+            }
         }
         /**
          * Remove an audio source from audio processing.
@@ -9764,14 +8234,12 @@
          * @param id - the id of the audio source to remove
          **/
         removeSource(sources, id) {
-            if (sources.has(id)) {
-                using(sources.get(id), (source) => {
-                    if (source.spatializer) {
-                        source.spatializer.stop();
-                    }
-                    sources.delete(id);
-                });
+            const source = sources.get(id);
+            if (source) {
+                sources.delete(id);
+                source.dispose();
             }
+            return source;
         }
         /**
          * Remove a user from audio processing.
@@ -9785,7 +8253,7 @@
          * Remove an audio clip from audio processing.
          **/
         removeClip(id) {
-            this.removeSource(this.clips, id);
+            return this.removeSource(this.clips, id);
         }
         createSourceFromStream(stream) {
             if (useTrackSource) {
@@ -9800,19 +8268,20 @@
                 else {
                     const merger = this.audioContext.createChannelMerger(tracks.length);
                     for (const track of tracks) {
-                        track.connect(merger);
+                        connect(track, merger);
                     }
                     return merger;
                 }
             }
             else {
-                const elem = Audio(playsInline(true), autoPlay(true), muted(!useElementSource), controls(false), styles(display("none")), srcObject(stream));
-                document.body.appendChild(elem);
+                const elem = BackgroundAudio(true, !useElementSourceForUsers);
+                elem.srcObject = stream;
                 elem.play();
-                if (useElementSource) {
+                if (useElementSourceForUsers) {
                     return this.audioContext.createMediaElementSource(elem);
                 }
                 else {
+                    elem.muted = true;
                     return this.audioContext.createMediaStreamSource(stream);
                 }
             }
@@ -9829,12 +8298,14 @@
                 user.spatializer = null;
                 if (stream) {
                     await waitFor(() => stream.active);
-                    const source = this.createSourceFromStream(stream);
-                    user.spatializer = this.createSpatializer(id, source, true);
+                    user.source = this.createSourceFromStream(stream);
+                    user.spatializer = this.createSpatializer(true);
                     user.spatializer.setAudioProperties(this.minDistance, this.maxDistance, this.rolloff, this.algorithm, this.transitionTime);
-                    const analyser = new ActivityAnalyser(user, this.audioContext, BUFFER_SIZE);
-                    analyser.addEventListener("audioActivity", this.onAudioActivity);
-                    this.analysers.set(id, analyser);
+                    if (this.analyzeAudio) {
+                        const analyser = new ActivityAnalyser(user, this.audioContext, BUFFER_SIZE);
+                        analyser.addEventListener("audioActivity", this.onAudioActivity);
+                        this.analysers.set(id, analyser);
+                    }
                 }
             }
         }
@@ -9873,28 +8344,29 @@
          * Get a pose, normalize the transition time, and perform on operation on it, if it exists.
          * @param sources - the collection of poses from which to retrieve the pose.
          * @param id - the id of the pose for which to perform the operation.
-         * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
          * @param poseCallback
          */
-        withPose(sources, id, dt, poseCallback) {
-            if (sources.has(id)) {
-                const source = sources.get(id);
-                const pose = source.pose;
-                if (dt == null) {
-                    dt = this.transitionTime;
-                }
-                return poseCallback(pose, dt);
+        withPose(sources, id, poseCallback) {
+            const source = sources.get(id);
+            let pose = null;
+            if (source) {
+                pose = source.pose;
             }
-            return null;
+            else if (id === this.localUserID) {
+                pose = this.localUser.pose;
+            }
+            if (!pose) {
+                return null;
+            }
+            return poseCallback(pose);
         }
         /**
          * Get a user pose, normalize the transition time, and perform on operation on it, if it exists.
          * @param id - the id of the user for which to perform the operation.
-         * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
          * @param poseCallback
          */
-        withUser(id, dt, poseCallback) {
-            return this.withPose(this.users, id, dt, poseCallback);
+        withUser(id, poseCallback) {
+            return this.withPose(this.users, id, poseCallback);
         }
         /**
          * Set the comfort position offset for a given user.
@@ -9904,7 +8376,7 @@
          * @param z - the lateral component of the offset.
          */
         setUserOffset(id, x, y, z) {
-            this.withUser(id, null, (pose) => {
+            this.withUser(id, (pose) => {
                 pose.setOffset(x, y, z);
             });
         }
@@ -9913,9 +8385,7 @@
          * @param id - the id of the user for which to set the offset.
          */
         getUserOffset(id) {
-            return this.withUser(id, null, (pose) => {
-                return pose.offset;
-            });
+            return this.withUser(id, pose => pose.offset);
         }
         /**
          * Set the position and orientation of a user.
@@ -9931,9 +8401,9 @@
          * @param uz - the lateral component of the up vector.
          * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
          **/
-        setUserPose(id, px, py, pz, fx, fy, fz, ux, uy, uz, dt = null) {
-            this.withUser(id, dt, (pose, dt) => {
-                pose.setTarget(px, py, pz, fx, fy, fz, ux, uy, uz, this.currentTime, dt);
+        setUserPose(id, px, py, pz, fx, fy, fz, ux, uy, uz) {
+            this.withUser(id, (pose) => {
+                pose.setTarget(px, py, pz, fx, fy, fz, ux, uy, uz, this.currentTime, this.transitionTime);
             });
         }
         /**
@@ -9942,8 +8412,8 @@
          * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
          * @param poseCallback
          */
-        withClip(id, dt, poseCallback) {
-            return this.withPose(this.clips, id, dt, poseCallback);
+        withClip(id, poseCallback) {
+            return this.withPose(this.clips, id, poseCallback);
         }
         /**
          * Set the position of an audio clip.
@@ -9951,11 +8421,10 @@
          * @param x - the horizontal component of the position.
          * @param y - the vertical component of the position.
          * @param z - the lateral component of the position.
-         * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
          **/
-        setClipPosition(id, x, y, z, dt = null) {
-            this.withClip(id, dt, (pose, dt) => {
-                pose.setTargetPosition(x, y, z, this.currentTime, dt);
+        setClipPosition(id, x, y, z) {
+            this.withClip(id, (pose) => {
+                pose.setTargetPosition(x, y, z, this.currentTime, this.transitionTime);
             });
         }
         /**
@@ -9967,11 +8436,10 @@
          * @param ux - the horizontal component of the up vector.
          * @param uy - the vertical component of the up vector.
          * @param uz - the lateral component of the up vector.
-         * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
          **/
-        setClipOrientation(id, fx, fy, fz, ux, uy, uz, dt = null) {
-            this.withClip(id, dt, (pose, dt) => {
-                pose.setTargetOrientation(fx, fy, fz, ux, uy, uz, this.currentTime, dt);
+        setClipOrientation(id, fx, fy, fz, ux, uy, uz) {
+            this.withClip(id, (pose) => {
+                pose.setTargetOrientation(fx, fy, fz, ux, uy, uz, this.currentTime, this.transitionTime);
             });
         }
         /**
@@ -9986,679 +8454,11 @@
          * @param ux - the horizontal component of the up vector.
          * @param uy - the vertical component of the up vector.
          * @param uz - the lateral component of the up vector.
-         * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
          **/
-        setClipPose(id, px, py, pz, fx, fy, fz, ux, uy, uz, dt = null) {
-            this.withClip(id, dt, (pose, dt) => {
-                pose.setTarget(px, py, pz, fx, fy, fz, ux, uy, uz, this.currentTime, dt);
+        setClipPose(id, px, py, pz, fx, fy, fz, ux, uy, uz) {
+            this.withClip(id, (pose) => {
+                pose.setTarget(px, py, pz, fx, fy, fz, ux, uy, uz, this.currentTime, 0.5);
             });
-        }
-    }
-
-    function addLogger(obj, evtName) {
-        obj.addEventListener(evtName, (...rest) => {
-            if (loggingEnabled) {
-                console.log(">== CALLA ==<", evtName, ...rest);
-            }
-        });
-    }
-    function filterDeviceDuplicates(devices) {
-        const filtered = [];
-        for (let i = 0; i < devices.length; ++i) {
-            const a = devices[i];
-            let found = false;
-            for (let j = 0; j < filtered.length && !found; ++j) {
-                const b = filtered[j];
-                found = a.kind === b.kind && b.label.indexOf(a.label) > 0;
-            }
-            if (!found) {
-                filtered.push(a);
-            }
-        }
-        return filtered;
-    }
-    const PREFERRED_AUDIO_OUTPUT_ID_KEY = "calla:preferredAudioOutputID";
-    const PREFERRED_AUDIO_INPUT_ID_KEY = "calla:preferredAudioInputID";
-    const PREFERRED_VIDEO_INPUT_ID_KEY = "calla:preferredVideoInputID";
-    const DEFAULT_LOCAL_USER_ID = "local-user";
-    let loggingEnabled = window.location.hostname === "localhost"
-        || /\bdebug\b/.test(window.location.search);
-    class BaseTeleconferenceClient extends TypedEventBase {
-        constructor(fetcher) {
-            super();
-            this.fetcher = fetcher;
-            this.localUserID = null;
-            this.localUserName = null;
-            this.roomName = null;
-            this._prepared = false;
-            this._connectionState = ConnectionState.Disconnected;
-            this._conferenceState = ConnectionState.Disconnected;
-            this.hasAudioPermission = false;
-            this.hasVideoPermission = false;
-            this.audio = new AudioManager(fetcher, isOculusQuest
-                ? SpatializerType.High
-                : SpatializerType.Medium);
-            this.addEventListener("serverConnected", this.setConnectionState.bind(this, ConnectionState.Connected));
-            this.addEventListener("serverFailed", this.setConnectionState.bind(this, ConnectionState.Disconnected));
-            this.addEventListener("serverDisconnected", this.setConnectionState.bind(this, ConnectionState.Disconnected));
-            this.addEventListener("conferenceJoined", this.setConferenceState.bind(this, ConnectionState.Connected));
-            this.addEventListener("conferenceFailed", this.setConferenceState.bind(this, ConnectionState.Disconnected));
-            this.addEventListener("conferenceRestored", this.setConferenceState.bind(this, ConnectionState.Connected));
-            this.addEventListener("conferenceLeft", this.setConferenceState.bind(this, ConnectionState.Disconnected));
-        }
-        toggleLogging() {
-            loggingEnabled = !loggingEnabled;
-        }
-        get connectionState() {
-            return this._connectionState;
-        }
-        setConnectionState(state) {
-            this._connectionState = state;
-        }
-        get conferenceState() {
-            return this._conferenceState;
-        }
-        setConferenceState(state) {
-            this._conferenceState = state;
-        }
-        dispatchEvent(evt) {
-            if (evt instanceof CallaUserEvent
-                && (evt.id == null
-                    || evt.id === "local")) {
-                if (this.localUserID === DEFAULT_LOCAL_USER_ID) {
-                    evt.id = null;
-                }
-                else {
-                    evt.id = this.localUserID;
-                }
-            }
-            return super.dispatchEvent(evt);
-        }
-        async getNext(evtName, userID) {
-            return new Promise((resolve) => {
-                const getter = (evt) => {
-                    if (evt instanceof CallaUserEvent
-                        && evt.id === userID) {
-                        this.removeEventListener(evtName, getter);
-                        resolve(evt);
-                    }
-                };
-                this.addEventListener(evtName, getter);
-            });
-        }
-        get preferredAudioInputID() {
-            return localStorage.getItem(PREFERRED_AUDIO_INPUT_ID_KEY);
-        }
-        set preferredAudioInputID(v) {
-            localStorage.setItem(PREFERRED_AUDIO_INPUT_ID_KEY, v);
-        }
-        get preferredVideoInputID() {
-            return localStorage.getItem(PREFERRED_VIDEO_INPUT_ID_KEY);
-        }
-        set preferredVideoInputID(v) {
-            localStorage.setItem(PREFERRED_VIDEO_INPUT_ID_KEY, v);
-        }
-        async setPreferredDevices() {
-            await this.setPreferredAudioInput(true);
-            await this.setPreferredVideoInput(false);
-            await this.setPreferredAudioOutput(true);
-        }
-        async getPreferredAudioInput(allowAny) {
-            const devices = await this.getAudioInputDevices();
-            const device = arrayScan(devices, (d) => d.deviceId === this.preferredAudioInputID, (d) => d.deviceId === "communications", (d) => d.deviceId === "default", (d) => allowAny && d.deviceId.length > 0);
-            return device;
-        }
-        async setPreferredAudioInput(allowAny) {
-            const device = await this.getPreferredAudioInput(allowAny);
-            if (device) {
-                await this.setAudioInputDevice(device);
-            }
-        }
-        async getPreferredVideoInput(allowAny) {
-            const devices = await this.getVideoInputDevices();
-            const device = arrayScan(devices, (d) => d.deviceId === this.preferredVideoInputID, (d) => allowAny && d && /front/i.test(d.label), (d) => allowAny && d.deviceId.length > 0);
-            return device;
-        }
-        async setPreferredVideoInput(allowAny) {
-            const device = await this.getPreferredVideoInput(allowAny);
-            if (device) {
-                await this.setVideoInputDevice(device);
-            }
-        }
-        async getDevices() {
-            let devices = null;
-            for (let i = 0; i < 3; ++i) {
-                devices = await navigator.mediaDevices.enumerateDevices();
-                for (const device of devices) {
-                    if (device.deviceId.length > 0) {
-                        this.hasAudioPermission = this.hasAudioPermission || device.kind === "audioinput" && device.label.length > 0;
-                        this.hasVideoPermission = this.hasVideoPermission || device.kind === "videoinput" && device.label.length > 0;
-                    }
-                }
-                if (this.hasAudioPermission) {
-                    break;
-                }
-                try {
-                    await navigator.mediaDevices.getUserMedia({ audio: !this.hasAudioPermission, video: !this.hasVideoPermission });
-                }
-                catch (exp) {
-                    console.warn(exp);
-                }
-            }
-            return devices || [];
-        }
-        async getMediaPermissions() {
-            await this.getDevices();
-            return {
-                audio: this.hasAudioPermission,
-                video: this.hasVideoPermission
-            };
-        }
-        async getAvailableDevices(filterDuplicates = false) {
-            let devices = await this.getDevices();
-            if (filterDuplicates) {
-                devices = filterDeviceDuplicates(devices);
-            }
-            return {
-                audioOutput: canChangeAudioOutput ? devices.filter(d => d.kind === "audiooutput") : [],
-                audioInput: devices.filter(d => d.kind === "audioinput"),
-                videoInput: devices.filter(d => d.kind === "videoinput")
-            };
-        }
-        async getAudioInputDevices(filterDuplicates = false) {
-            const devices = await this.getAvailableDevices(filterDuplicates);
-            return devices && devices.audioInput || [];
-        }
-        async getVideoInputDevices(filterDuplicates = false) {
-            const devices = await this.getAvailableDevices(filterDuplicates);
-            return devices && devices.videoInput || [];
-        }
-        async setAudioOutputDevice(device) {
-            if (canChangeAudioOutput) {
-                this.preferredAudioOutputID = device && device.deviceId || null;
-            }
-        }
-        async getAudioOutputDevices(filterDuplicates = false) {
-            if (!canChangeAudioOutput) {
-                return [];
-            }
-            const devices = await this.getAvailableDevices(filterDuplicates);
-            return devices && devices.audioOutput || [];
-        }
-        async getCurrentAudioOutputDevice() {
-            if (!canChangeAudioOutput) {
-                return null;
-            }
-            const curId = this.audio.getAudioOutputDeviceID(), devices = await this.getAudioOutputDevices(), device = devices.filter((d) => curId != null && d.deviceId === curId
-                || curId == null && d.deviceId === this.preferredAudioOutputID);
-            if (device.length === 0) {
-                return null;
-            }
-            else {
-                return device[0];
-            }
-        }
-        get preferredAudioOutputID() {
-            return localStorage.getItem(PREFERRED_AUDIO_OUTPUT_ID_KEY);
-        }
-        set preferredAudioOutputID(v) {
-            localStorage.setItem(PREFERRED_AUDIO_OUTPUT_ID_KEY, v);
-        }
-        async getPreferredAudioOutput(allowAny) {
-            const devices = await this.getAudioOutputDevices();
-            const device = arrayScan(devices, (d) => d.deviceId === this.preferredAudioOutputID, (d) => d.deviceId === "communications", (d) => d.deviceId === "default", (d) => allowAny && d.deviceId.length > 0);
-            return device;
-        }
-        async setPreferredAudioOutput(allowAny) {
-            const device = await this.getPreferredAudioOutput(allowAny);
-            if (device) {
-                await this.setAudioOutputDevice(device);
-            }
-        }
-        async setAudioInputDevice(device) {
-            this.preferredAudioInputID = device && device.deviceId || null;
-        }
-        async setVideoInputDevice(device) {
-            this.preferredVideoInputID = device && device.deviceId || null;
-        }
-        async connect() {
-            this.setConnectionState(ConnectionState.Connecting);
-        }
-        async join(_roomName, _password) {
-            this.setConferenceState(ConnectionState.Connecting);
-        }
-        async leave() {
-            this.setConferenceState(ConnectionState.Disconnecting);
-        }
-        async disconnect() {
-            this.setConnectionState(ConnectionState.Disconnecting);
-        }
-    }
-
-    const jQueryPath = "https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/jquery.min.js";
-    function encodeUserName(v) {
-        try {
-            return encodeURIComponent(v);
-        }
-        catch (exp) {
-            return v;
-        }
-    }
-    function decodeUserName(v) {
-        try {
-            return decodeURIComponent(v);
-        }
-        catch (exp) {
-            return v;
-        }
-    }
-    class JitsiTeleconferenceClient extends BaseTeleconferenceClient {
-        constructor(fetcher) {
-            super(fetcher);
-            this.usingDefaultMetadataClient = false;
-            this.host = null;
-            this.bridgeHost = null;
-            this.bridgeMUC = null;
-            this.connection = null;
-            this.conference = null;
-            this.tracks = new Map();
-            this.listenersForObjs = new Map();
-        }
-        _on(obj, evtName, handler) {
-            let objListeners = this.listenersForObjs.get(obj);
-            if (!objListeners) {
-                this.listenersForObjs.set(obj, objListeners = new Map());
-            }
-            let evtListeners = objListeners.get(evtName);
-            if (!evtListeners) {
-                objListeners.set(evtName, evtListeners = new Array());
-            }
-            evtListeners.push(handler);
-            obj.addEventListener(evtName, handler);
-        }
-        _off(obj) {
-            const objListeners = this.listenersForObjs.get(obj);
-            if (objListeners) {
-                this.listenersForObjs.delete(obj);
-                for (const [evtName, handlers] of objListeners.entries()) {
-                    for (const handler of handlers) {
-                        obj.removeEventListener(evtName, handler);
-                    }
-                    arrayClear(handlers);
-                }
-                objListeners.clear();
-            }
-        }
-        getDefaultMetadataClient() {
-            this.usingDefaultMetadataClient = true;
-            return new JitsiMetadataClient(this);
-        }
-        async prepare(JITSI_HOST, JVB_HOST, JVB_MUC, onProgress) {
-            if (!this._prepared) {
-                this.host = JITSI_HOST;
-                this.bridgeHost = JVB_HOST;
-                this.bridgeMUC = JVB_MUC;
-                console.info("Connecting to:", this.host);
-                const progs = splitProgress(onProgress, 2);
-                await this.fetcher.loadScript(jQueryPath, () => "jQuery" in globalThis, progs.shift());
-                await this.fetcher.loadScript(`https://${this.host}/libs/lib-jitsi-meet.min.js`, () => "JitsiMeetJS" in globalThis, progs.shift());
-                {
-                    JitsiMeetJS.setLogLevel(JitsiMeetJS.logLevels.ERROR);
-                }
-                JitsiMeetJS.init();
-                this._prepared = true;
-            }
-        }
-        async connect() {
-            await super.connect();
-            const connectionEvents = JitsiMeetJS.events.connection;
-            this.connection = new JitsiMeetJS.JitsiConnection(null, null, {
-                hosts: {
-                    domain: this.bridgeHost,
-                    muc: this.bridgeMUC
-                },
-                serviceUrl: `https://${this.host}/http-bind`
-            });
-            for (const evtName of Object.values(connectionEvents)) {
-                addLogger(this.connection, evtName);
-            }
-            const onDisconnect = () => {
-                if (this.connection) {
-                    this._off(this.connection);
-                    this.connection = null;
-                }
-            };
-            const fwd = (evtName, EvtClass, extra) => {
-                this._on(this.connection, evtName, () => {
-                    this.dispatchEvent(new EvtClass());
-                    if (extra) {
-                        extra();
-                    }
-                });
-            };
-            fwd(connectionEvents.CONNECTION_ESTABLISHED, CallaTeleconferenceServerConnectedEvent);
-            fwd(connectionEvents.CONNECTION_DISCONNECTED, CallaTeleconferenceServerDisconnectedEvent, onDisconnect);
-            fwd(connectionEvents.CONNECTION_FAILED, CallaTeleconferenceServerFailedEvent, onDisconnect);
-            const connectTask = once(this.connection, connectionEvents.CONNECTION_ESTABLISHED);
-            this.connection.connect();
-            await connectTask;
-        }
-        async join(roomName, password) {
-            await super.join(roomName, password);
-            const isoRoomName = roomName.toLocaleLowerCase();
-            if (isoRoomName !== this.roomName) {
-                if (this.conference) {
-                    await this.leave();
-                }
-                this.roomName = isoRoomName;
-                this.conference = this.connection.initJitsiConference(this.roomName, {
-                    openBridgeChannel: this.usingDefaultMetadataClient,
-                    p2p: { enabled: false },
-                    startVideoMuted: true
-                });
-                const conferenceEvents = JitsiMeetJS.events.conference;
-                for (const evtName of Object.values(conferenceEvents)) {
-                    if (evtName !== "conference.audioLevelsChanged") {
-                        addLogger(this.conference, evtName);
-                    }
-                }
-                const fwd = (evtName, EvtClass, extra) => {
-                    this._on(this.conference, evtName, () => {
-                        this.dispatchEvent(new EvtClass());
-                        if (extra) {
-                            extra();
-                        }
-                    });
-                };
-                const onLeft = async () => {
-                    this.localUserID = DEFAULT_LOCAL_USER_ID;
-                    if (this.tracks.size > 0) {
-                        console.warn("><> CALLA <>< ---- there are leftover conference tracks");
-                        for (const userID of this.tracks.keys()) {
-                            await this.tryRemoveTrack(userID, StreamType.Video);
-                            await this.tryRemoveTrack(userID, StreamType.Audio);
-                            this.dispatchEvent(new CallaParticipantLeftEvent(userID));
-                        }
-                    }
-                    this.dispatchEvent(new CallaConferenceLeftEvent(this.localUserID));
-                    if (this.conference) {
-                        this._off(this.conference);
-                        this.conference = null;
-                    }
-                };
-                fwd(conferenceEvents.CONFERENCE_ERROR, CallaConferenceFailedEvent, onLeft);
-                fwd(conferenceEvents.CONFERENCE_FAILED, CallaConferenceFailedEvent, onLeft);
-                fwd(conferenceEvents.CONNECTION_INTERRUPTED, CallaConferenceFailedEvent, onLeft);
-                this._on(this.conference, conferenceEvents.CONFERENCE_JOINED, async () => {
-                    const userID = this.conference.myUserId();
-                    if (userID) {
-                        this.localUserID = userID;
-                        this.dispatchEvent(new CallaConferenceJoinedEvent(userID, null));
-                    }
-                });
-                this._on(this.conference, conferenceEvents.CONFERENCE_LEFT, onLeft);
-                this._on(this.conference, conferenceEvents.USER_JOINED, (id, jitsiUser) => {
-                    this.dispatchEvent(new CallaParticipantJoinedEvent(id, decodeUserName(jitsiUser.getDisplayName()), null));
-                });
-                this._on(this.conference, conferenceEvents.USER_LEFT, (id) => {
-                    this.dispatchEvent(new CallaParticipantLeftEvent(id));
-                });
-                this._on(this.conference, conferenceEvents.DISPLAY_NAME_CHANGED, (id, displayName) => {
-                    this.dispatchEvent(new CallaParticipantNameChangeEvent(id, decodeUserName(displayName)));
-                });
-                const onTrackMuteChanged = (track, muted) => {
-                    const userID = track.getParticipantId() || this.localUserID, trackKind = track.getType(), evt = trackKind === StreamType.Audio
-                        ? new CallaUserAudioMutedEvent(userID, muted)
-                        : new CallaUserVideoMutedEvent(userID, muted);
-                    this.dispatchEvent(evt);
-                };
-                this._on(this.conference, conferenceEvents.TRACK_ADDED, (track) => {
-                    const userID = track.getParticipantId() || this.localUserID, trackKind = track.getType(), trackAddedEvt = trackKind === StreamType.Audio
-                        ? new CallaAudioStreamAddedEvent(userID, track.stream)
-                        : new CallaVideoStreamAddedEvent(userID, track.stream);
-                    let userTracks = this.tracks.get(userID);
-                    if (!userTracks) {
-                        userTracks = new Map();
-                        this.tracks.set(userID, userTracks);
-                    }
-                    const curTrack = userTracks.get(trackKind);
-                    if (curTrack) {
-                        const trackRemovedEvt = StreamType.Audio
-                            ? new CallaAudioStreamRemovedEvent(userID, curTrack.stream)
-                            : new CallaVideoStreamRemovedEvent(userID, curTrack.stream);
-                        this.dispatchEvent(trackRemovedEvt);
-                        curTrack.dispose();
-                    }
-                    userTracks.set(trackKind, track);
-                    this.dispatchEvent(trackAddedEvt);
-                    track.addEventListener(JitsiMeetJS.events.track.TRACK_MUTE_CHANGED, (track) => {
-                        onTrackMuteChanged(track, track.isMuted());
-                    });
-                    onTrackMuteChanged(track, false);
-                });
-                this._on(this.conference, conferenceEvents.TRACK_REMOVED, (track) => {
-                    using(track, (_) => {
-                        const userID = track.getParticipantId() || this.localUserID, trackKind = track.getType(), trackRemovedEvt = StreamType.Audio
-                            ? new CallaAudioStreamRemovedEvent(userID, track.stream)
-                            : new CallaVideoStreamRemovedEvent(userID, track.stream);
-                        onTrackMuteChanged(track, true);
-                        this.dispatchEvent(trackRemovedEvt);
-                        const userTracks = this.tracks.get(userID);
-                        if (userTracks) {
-                            const curTrack = userTracks.get(trackKind);
-                            if (curTrack) {
-                                userTracks.delete(trackKind);
-                                if (userTracks.size === 0) {
-                                    this.tracks.delete(userID);
-                                }
-                                if (curTrack !== track) {
-                                    curTrack.dispose();
-                                }
-                            }
-                        }
-                    });
-                });
-                const joinTask = once(this, "conferenceJoined");
-                this.conference.join(password);
-                await joinTask;
-            }
-        }
-        async identify(userName) {
-            this.localUserName = userName;
-            this.conference.setDisplayName(encodeUserName(userName));
-        }
-        async tryRemoveTrack(userID, kind) {
-            const userTracks = this.tracks.get(userID);
-            const EvtClass = kind === StreamType.Video
-                ? CallaVideoStreamRemovedEvent
-                : CallaAudioStreamRemovedEvent;
-            if (userTracks) {
-                const track = userTracks.get(kind);
-                if (track) {
-                    this.dispatchEvent(new EvtClass(userID, track.stream));
-                    userTracks.delete(kind);
-                    try {
-                        if (this.conference && track.isLocal) {
-                            this.conference.removeTrack(track);
-                        }
-                    }
-                    catch (exp) {
-                        console.warn(exp);
-                    }
-                    finally {
-                        track.dispose();
-                    }
-                }
-                if (userTracks.size === 0) {
-                    this.tracks.delete(userID);
-                }
-            }
-        }
-        async leave() {
-            if (this.conferenceState === ConnectionState.Connecting) {
-                await waitFor(() => this.conferenceState === ConnectionState.Connected);
-            }
-            if (this.conferenceState === ConnectionState.Disconnecting) {
-                await waitFor(() => this.conferenceState === ConnectionState.Disconnected);
-            }
-            else if (this.conferenceState === ConnectionState.Connected) {
-                await super.leave();
-                try {
-                    await this.tryRemoveTrack(this.localUserID, StreamType.Video);
-                    await this.tryRemoveTrack(this.localUserID, StreamType.Audio);
-                    const leaveTask = once(this, "conferenceLeft");
-                    this.conference.leave();
-                    await leaveTask;
-                }
-                catch (exp) {
-                    console.warn("><> CALLA <>< ---- Failed to leave teleconference.", exp);
-                }
-            }
-        }
-        async disconnect() {
-            if (this.connectionState === ConnectionState.Connecting) {
-                await waitFor(() => this.connectionState === ConnectionState.Connected);
-            }
-            if (this.connectionState === ConnectionState.Disconnecting) {
-                await waitFor(() => this.connectionState === ConnectionState.Disconnected);
-            }
-            else if (this.connectionState === ConnectionState.Connected) {
-                await super.disconnect();
-                await this.leave();
-                const disconnectTask = once(this, "serverDisconnected");
-                this.connection.disconnect();
-                await disconnectTask;
-            }
-        }
-        userExists(id) {
-            return this.conference
-                && this.conference.participants
-                && id in this.conference.participants;
-        }
-        getUserNames() {
-            if (this.conference) {
-                return Object.keys(this.conference.participants)
-                    .map(k => [k, decodeUserName(this.conference.participants[k].getDisplayName())]);
-            }
-            else {
-                return [];
-            }
-        }
-        getCurrentMediaTrack(type) {
-            if (this.localUserID === DEFAULT_LOCAL_USER_ID) {
-                return null;
-            }
-            const userTracks = this.tracks.get(this.localUserID);
-            if (!userTracks) {
-                return null;
-            }
-            return userTracks.get(type);
-        }
-        async setAudioInputDevice(device) {
-            await super.setAudioInputDevice(device);
-            const cur = this.getCurrentMediaTrack(StreamType.Audio);
-            if (cur) {
-                const removeTask = this.getNext("audioRemoved", this.localUserID);
-                this.conference.removeTrack(cur);
-                await removeTask;
-            }
-            if (this.conference && this.preferredAudioInputID) {
-                const addTask = this.getNext("audioAdded", this.localUserID);
-                const tracks = await JitsiMeetJS.createLocalTracks({
-                    devices: ["audio"],
-                    micDeviceId: this.preferredAudioInputID,
-                    constraints: {
-                        autoGainControl: true,
-                        echoCancellation: true,
-                        noiseSuppression: true
-                    }
-                });
-                for (const track of tracks) {
-                    this.conference.addTrack(track);
-                }
-                await addTask;
-            }
-        }
-        async setVideoInputDevice(device) {
-            await super.setVideoInputDevice(device);
-            const cur = this.getCurrentMediaTrack(StreamType.Video);
-            if (cur) {
-                const removeTask = this.getNext("videoRemoved", this.localUserID);
-                this.conference.removeTrack(cur);
-                await removeTask;
-            }
-            if (this.conference && this.preferredVideoInputID) {
-                const addTask = this.getNext("videoAdded", this.localUserID);
-                const tracks = await JitsiMeetJS.createLocalTracks({
-                    devices: ["video"],
-                    cameraDeviceId: this.preferredVideoInputID
-                });
-                for (const track of tracks) {
-                    this.conference.addTrack(track);
-                }
-                await addTask;
-            }
-        }
-        async getCurrentAudioInputDevice() {
-            const cur = this.getCurrentMediaTrack(StreamType.Audio), devices = await this.getAudioInputDevices(), device = devices.filter((d) => cur != null && d.deviceId === cur.getDeviceId()
-                || cur == null && d.deviceId === this.preferredAudioInputID);
-            if (device.length === 0) {
-                return null;
-            }
-            else {
-                return device[0];
-            }
-        }
-        async getCurrentVideoInputDevice() {
-            const cur = this.getCurrentMediaTrack(StreamType.Video), devices = await this.getVideoInputDevices(), device = devices.filter((d) => cur != null && d.deviceId === cur.getDeviceId()
-                || cur == null && d.deviceId === this.preferredVideoInputID);
-            if (device.length === 0) {
-                return null;
-            }
-            else {
-                return device[0];
-            }
-        }
-        async toggleAudioMuted() {
-            const changeTask = this.getNext("audioMuteStatusChanged", this.localUserID);
-            const cur = this.getCurrentMediaTrack(StreamType.Audio);
-            if (cur) {
-                const muted = cur.isMuted();
-                if (muted) {
-                    await cur.unmute();
-                }
-                else {
-                    await cur.mute();
-                }
-            }
-            else {
-                await this.setPreferredAudioInput(true);
-            }
-            const evt = await changeTask;
-            return evt.muted;
-        }
-        async toggleVideoMuted() {
-            const changeTask = this.getNext("videoMuteStatusChanged", this.localUserID);
-            const cur = this.getCurrentMediaTrack(StreamType.Video);
-            if (cur) {
-                await this.setVideoInputDevice(null);
-            }
-            else {
-                await this.setPreferredVideoInput(true);
-            }
-            const evt = await changeTask;
-            return evt.muted;
-        }
-        isMediaMuted(type) {
-            const cur = this.getCurrentMediaTrack(type);
-            return cur == null
-                || cur.isMuted();
-        }
-        async getAudioMuted() {
-            return this.isMediaMuted(StreamType.Audio);
-        }
-        async getVideoMuted() {
-            return this.isMediaMuted(StreamType.Video);
         }
     }
 
@@ -10674,53 +8474,44 @@
     })(ClientState || (ClientState = {}));
     const audioActivityEvt$2 = new AudioActivityEvent();
     class Calla extends TypedEventBase {
-        constructor(fetcher, TeleClientType, MetaClientType) {
+        constructor(_fetcher, _tele, _meta) {
             super();
+            this._fetcher = _fetcher;
+            this._tele = _tele;
+            this._meta = _meta;
             this.isAudioMuted = null;
             this.isVideoMuted = null;
-            if (isNullOrUndefined(fetcher)) {
-                fetcher = new Fetcher();
-            }
-            if (isNullOrUndefined(TeleClientType)) {
-                TeleClientType = JitsiTeleconferenceClient;
-            }
-            this.tele = new TeleClientType(fetcher);
-            if (isNullOrUndefined(MetaClientType)) {
-                this.meta = this.tele.getDefaultMetadataClient();
-            }
-            else {
-                this.meta = new MetaClientType(this.tele);
-            }
+            this.disposed = false;
             const fwd = this.dispatchEvent.bind(this);
-            this.tele.addEventListener("serverConnected", fwd);
-            this.tele.addEventListener("serverDisconnected", fwd);
-            this.tele.addEventListener("serverFailed", fwd);
-            this.tele.addEventListener("conferenceFailed", fwd);
-            this.tele.addEventListener("conferenceRestored", fwd);
-            this.tele.addEventListener("audioMuteStatusChanged", fwd);
-            this.tele.addEventListener("videoMuteStatusChanged", fwd);
-            this.tele.addEventListener("conferenceJoined", async (evt) => {
-                const user = this.audio.createLocalUser(evt.id);
+            this._tele.addEventListener("serverConnected", fwd);
+            this._tele.addEventListener("serverDisconnected", fwd);
+            this._tele.addEventListener("serverFailed", fwd);
+            this._tele.addEventListener("conferenceFailed", fwd);
+            this._tele.addEventListener("conferenceRestored", fwd);
+            this._tele.addEventListener("audioMuteStatusChanged", fwd);
+            this._tele.addEventListener("videoMuteStatusChanged", fwd);
+            this._tele.addEventListener("conferenceJoined", async (evt) => {
+                const user = this.audio.setLocalUserID(evt.id);
                 evt.pose = user.pose;
                 this.dispatchEvent(evt);
                 await this.setPreferredDevices();
             });
-            this.tele.addEventListener("conferenceLeft", (evt) => {
-                this.audio.createLocalUser(evt.id);
+            this._tele.addEventListener("conferenceLeft", (evt) => {
+                this.audio.setLocalUserID(evt.id);
                 this.dispatchEvent(evt);
             });
-            this.tele.addEventListener("participantJoined", async (joinEvt) => {
+            this._tele.addEventListener("participantJoined", async (joinEvt) => {
                 joinEvt.source = this.audio.createUser(joinEvt.id);
                 this.dispatchEvent(joinEvt);
             });
-            this.tele.addEventListener("participantLeft", (evt) => {
+            this._tele.addEventListener("participantLeft", (evt) => {
                 this.dispatchEvent(evt);
                 this.audio.removeUser(evt.id);
             });
-            this.tele.addEventListener("userNameChanged", fwd);
-            this.tele.addEventListener("videoAdded", fwd);
-            this.tele.addEventListener("videoRemoved", fwd);
-            this.tele.addEventListener("audioAdded", (evt) => {
+            this._tele.addEventListener("userNameChanged", fwd);
+            this._tele.addEventListener("videoAdded", fwd);
+            this._tele.addEventListener("videoRemoved", fwd);
+            this._tele.addEventListener("audioAdded", (evt) => {
                 const user = this.audio.getUser(evt.id);
                 if (user) {
                     let stream = user.streams.get(evt.kind);
@@ -10729,26 +8520,26 @@
                     }
                     stream = evt.stream;
                     user.streams.set(evt.kind, stream);
-                    if (evt.id !== this.tele.localUserID) {
+                    if (evt.id !== this._tele.localUserID) {
                         this.audio.setUserStream(evt.id, stream);
                     }
                     this.dispatchEvent(evt);
                 }
             });
-            this.tele.addEventListener("audioRemoved", (evt) => {
+            this._tele.addEventListener("audioRemoved", (evt) => {
                 const user = this.audio.getUser(evt.id);
                 if (user && user.streams.has(evt.kind)) {
                     user.streams.delete(evt.kind);
                 }
-                if (evt.id !== this.tele.localUserID) {
+                if (evt.id !== this._tele.localUserID) {
                     this.audio.setUserStream(evt.id, null);
                 }
                 this.dispatchEvent(evt);
             });
-            this.meta.addEventListener("avatarChanged", fwd);
-            this.meta.addEventListener("chat", fwd);
-            this.meta.addEventListener("emote", fwd);
-            this.meta.addEventListener("setAvatarEmoji", fwd);
+            this._meta.addEventListener("avatarChanged", fwd);
+            this._meta.addEventListener("chat", fwd);
+            this._meta.addEventListener("emote", fwd);
+            this._meta.addEventListener("setAvatarEmoji", fwd);
             const offsetEvt = (poseEvt) => {
                 const O = this.audio.getUserOffset(poseEvt.id);
                 if (O) {
@@ -10758,8 +8549,8 @@
                 }
                 this.dispatchEvent(poseEvt);
             };
-            this.meta.addEventListener("userPointer", offsetEvt);
-            this.meta.addEventListener("userPosed", (evt) => {
+            this._meta.addEventListener("userPointer", offsetEvt);
+            this._meta.addEventListener("userPosed", (evt) => {
                 this.audio.setUserPose(evt.id, evt.px, evt.py, evt.pz, evt.fx, evt.fy, evt.fz, evt.ux, evt.uy, evt.uz);
                 offsetEvt(evt);
             });
@@ -10775,50 +8566,62 @@
             Object.seal(this);
         }
         get connectionState() {
-            return this.tele.connectionState;
+            return this._tele.connectionState;
         }
         get conferenceState() {
-            return this.tele.conferenceState;
+            return this._tele.conferenceState;
+        }
+        get fetcher() {
+            return this._fetcher;
+        }
+        get tele() {
+            return this._tele;
+        }
+        get meta() {
+            return this._meta;
         }
         get audio() {
-            return this.tele.audio;
+            return this._tele.audio;
         }
         get preferredAudioOutputID() {
-            return this.tele.preferredAudioOutputID;
+            return this._tele.preferredAudioOutputID;
         }
         set preferredAudioOutputID(v) {
-            this.tele.preferredAudioOutputID = v;
+            this._tele.preferredAudioOutputID = v;
         }
         get preferredAudioInputID() {
-            return this.tele.preferredAudioInputID;
+            return this._tele.preferredAudioInputID;
         }
         set preferredAudioInputID(v) {
-            this.tele.preferredAudioInputID = v;
+            this._tele.preferredAudioInputID = v;
         }
         get preferredVideoInputID() {
-            return this.tele.preferredVideoInputID;
+            return this._tele.preferredVideoInputID;
         }
         set preferredVideoInputID(v) {
-            this.tele.preferredVideoInputID = v;
+            this._tele.preferredVideoInputID = v;
         }
         async getCurrentAudioOutputDevice() {
-            return await this.tele.getCurrentAudioOutputDevice();
+            return await this._tele.getCurrentAudioOutputDevice();
         }
         async getMediaPermissions() {
-            return await this.tele.getMediaPermissions();
+            return await this._tele.getMediaPermissions();
         }
         async getAudioOutputDevices(filterDuplicates) {
-            return await this.tele.getAudioOutputDevices(filterDuplicates);
+            return await this._tele.getAudioOutputDevices(filterDuplicates);
         }
         async getAudioInputDevices(filterDuplicates) {
-            return await this.tele.getAudioInputDevices(filterDuplicates);
+            return await this._tele.getAudioInputDevices(filterDuplicates);
         }
         async getVideoInputDevices(filterDuplicates) {
-            return await this.tele.getVideoInputDevices(filterDuplicates);
+            return await this._tele.getVideoInputDevices(filterDuplicates);
         }
         dispose() {
-            this.leave();
-            this.disconnect();
+            if (!this.disposed) {
+                this.leave();
+                this.disconnect();
+                this.disposed = true;
+            }
         }
         get offsetRadius() {
             return this.audio.offsetRadius;
@@ -10827,107 +8630,101 @@
             this.audio.offsetRadius = v;
         }
         setLocalPose(px, py, pz, fx, fy, fz, ux, uy, uz) {
-            this.audio.setUserPose(this.localUserID, px, py, pz, fx, fy, fz, ux, uy, uz, 0);
-            this.meta.setLocalPose(px, py, pz, fx, fy, fz, ux, uy, uz);
+            this.audio.setUserPose(this.localUserID, px, py, pz, fx, fy, fz, ux, uy, uz);
+            this._meta.setLocalPose(px, py, pz, fx, fy, fz, ux, uy, uz);
         }
         setLocalPoseImmediate(px, py, pz, fx, fy, fz, ux, uy, uz) {
-            this.audio.setUserPose(this.localUserID, px, py, pz, fx, fy, fz, ux, uy, uz, 0);
-            this.meta.setLocalPoseImmediate(px, py, pz, fx, fy, fz, ux, uy, uz);
+            this.audio.setUserPose(this.localUserID, px, py, pz, fx, fy, fz, ux, uy, uz);
+            this._meta.setLocalPoseImmediate(px, py, pz, fx, fy, fz, ux, uy, uz);
         }
         setLocalPointer(name, px, py, pz, fx, fy, fz, ux, uy, uz) {
-            this.meta.setLocalPointer(name, px, py, pz, fx, fy, fz, ux, uy, uz);
+            this._meta.setLocalPointer(name, px, py, pz, fx, fy, fz, ux, uy, uz);
         }
         setAvatarEmoji(emoji) {
-            this.meta.setAvatarEmoji(emoji);
+            this._meta.setAvatarEmoji(emoji);
         }
         setAvatarURL(url) {
-            this.meta.setAvatarURL(url);
+            this._meta.setAvatarURL(url);
         }
         emote(emoji) {
-            this.meta.emote(emoji);
+            this._meta.emote(emoji);
         }
         chat(text) {
-            this.meta.chat(text);
+            this._meta.chat(text);
         }
         async setPreferredDevices() {
-            await this.tele.setPreferredDevices();
+            await this._tele.setPreferredDevices();
         }
         async setAudioInputDevice(device) {
-            await this.tele.setAudioInputDevice(device);
+            await this._tele.setAudioInputDevice(device);
         }
         async setVideoInputDevice(device) {
-            await this.tele.setVideoInputDevice(device);
+            await this._tele.setVideoInputDevice(device);
         }
         async getCurrentAudioInputDevice() {
-            return await this.tele.getCurrentAudioInputDevice();
+            return await this._tele.getCurrentAudioInputDevice();
         }
         async getCurrentVideoInputDevice() {
-            return await this.tele.getCurrentVideoInputDevice();
+            return await this._tele.getCurrentVideoInputDevice();
         }
         async toggleAudioMuted() {
-            return await this.tele.toggleAudioMuted();
+            return await this._tele.toggleAudioMuted();
         }
         async toggleVideoMuted() {
-            return await this.tele.toggleVideoMuted();
+            return await this._tele.toggleVideoMuted();
         }
         async getAudioMuted() {
-            return await this.tele.getAudioMuted();
+            return await this._tele.getAudioMuted();
         }
         async getVideoMuted() {
-            return await this.tele.getVideoMuted();
+            return await this._tele.getVideoMuted();
         }
         get metadataState() {
-            return this.meta.metadataState;
+            return this._meta.metadataState;
         }
         get localUserID() {
-            return this.tele.localUserID;
+            return this._tele.localUserID;
         }
         get localUserName() {
-            return this.tele.localUserName;
+            return this._tele.localUserName;
         }
         get roomName() {
-            return this.tele.roomName;
+            return this._tele.roomName;
         }
         userExists(id) {
-            return this.tele.userExists(id);
+            return this._tele.userExists(id);
         }
         getUserNames() {
-            return this.tele.getUserNames();
-        }
-        async prepare(JITSI_HOST, JVB_HOST, JVB_MUC, onProgress) {
-            await this.tele.prepare(JITSI_HOST, JVB_HOST, JVB_MUC, onProgress);
+            return this._tele.getUserNames();
         }
         async connect() {
-            await this.tele.connect();
-            if (this.tele.connectionState === ConnectionState.Connected) {
-                await this.meta.connect();
+            await this._tele.connect();
+            if (this._tele.connectionState === ConnectionState.Connected) {
+                await this._meta.connect();
             }
         }
         async join(roomName) {
-            await this.tele.join(roomName);
-            if (this.tele.conferenceState === ConnectionState.Connected) {
-                await this.meta.join(roomName);
+            await this._tele.join(roomName);
+            if (this._tele.conferenceState === ConnectionState.Connected) {
+                await this._meta.join(roomName);
             }
         }
         async identify(userName) {
-            await this.tele.identify(userName);
-            await this.meta.identify(this.localUserID);
+            await this._tele.identify(userName);
+            await this._meta.identify(this.localUserID);
         }
         async leave() {
-            await this.meta.leave();
-            await this.tele.leave();
+            await this._meta.leave();
+            await this._tele.leave();
         }
         async disconnect() {
-            await this.meta.disconnect();
-            await this.tele.disconnect();
-        }
-        update() {
-            this.audio.update();
+            await this._meta.disconnect();
+            await this._tele.disconnect();
         }
         async setAudioOutputDevice(device) {
-            this.tele.setAudioOutputDevice(device);
+            this._tele.setAudioOutputDevice(device);
             if (canChangeAudioOutput) {
-                await this.audio.setAudioOutputDeviceID(this.tele.preferredAudioOutputID);
+                await this.audio.setAudioOutputDeviceID(this._tele.preferredAudioOutputID);
             }
         }
         async setAudioMuted(muted) {
@@ -10943,6 +8740,87 @@
                 isMuted = await this.toggleVideoMuted();
             }
             return isMuted;
+        }
+    }
+
+    class BaseClientLoader {
+        async load(fetcher, audio, onProgress) {
+            let f = null;
+            let a = null;
+            let p = null;
+            if (isDefined(fetcher)
+                && !(fetcher instanceof AudioManager)
+                && !isFunction(fetcher)) {
+                f = fetcher;
+            }
+            else {
+                f = new Fetcher();
+            }
+            if (fetcher instanceof AudioManager) {
+                a = fetcher;
+            }
+            else if (isDefined(audio)
+                && !isFunction(audio)) {
+                a = audio;
+            }
+            else {
+                a = new AudioManager(f);
+            }
+            if (isFunction(fetcher)) {
+                p = fetcher;
+            }
+            else if (isFunction(audio)) {
+                p = audio;
+            }
+            else if (isFunction(onProgress)) {
+                p = onProgress;
+            }
+            await this._load(f, p);
+            const t = this.createTeleconferenceClient(f, a);
+            const m = this.createMetadataClient(f, a, t);
+            return Promise.resolve(new Calla(f, t, m));
+        }
+    }
+
+    const jQueryPath = "https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/jquery.min.js";
+    class BaseJitsiClientLoader extends BaseClientLoader {
+        constructor(host, bridgeHost, bridgeMUC) {
+            super();
+            this.host = host;
+            this.bridgeHost = bridgeHost;
+            this.bridgeMUC = bridgeMUC;
+            this.loaded = false;
+        }
+        async _load(fetcher, onProgress) {
+            if (!this.loaded) {
+                console.info("Connecting to:", this.host);
+                const progs = splitProgress(onProgress, [1, 3]);
+                await fetcher.loadScript(jQueryPath, () => "jQuery" in globalThis, progs.shift());
+                await fetcher.loadScript(`https://${this.host}/libs/lib-jitsi-meet.min.js`, () => "JitsiMeetJS" in globalThis, progs.shift());
+                {
+                    JitsiMeetJS.setLogLevel(JitsiMeetJS.logLevels.ERROR);
+                }
+                JitsiMeetJS.init();
+                this.loaded = true;
+            }
+        }
+        createTeleconferenceClient(fetcher, audio) {
+            if (!this.loaded) {
+                throw new Error("lib-jitsi-meet has not been loaded. Call clientFactory.load().");
+            }
+            return new JitsiTeleconferenceClient(fetcher, audio, this.host, this.bridgeHost, this.bridgeMUC);
+        }
+    }
+
+    class JitsiOnlyClientLoader extends BaseJitsiClientLoader {
+        constructor(host, bridgeHost, bridgeMUC) {
+            super(host, bridgeHost, bridgeMUC);
+        }
+        createMetadataClient(_fetcher, _audio, tele) {
+            if (!this.loaded) {
+                throw new Error("lib-jitsi-meet has not been loaded. Call clientFactory.load().");
+            }
+            return new JitsiMetadataClient(tele);
         }
     }
 
@@ -11047,47 +8925,6 @@
     const JVB_HOST = JITSI_HOST;
     const JVB_MUC = "conference." + JITSI_HOST;
 
-    const loc = new URL(document.location.href);
-    const testNumber = loc.searchParams.get("testUserNumber");
-    /**
-     * The test instance value that the current window has loaded. This is
-     * figured out either from a number in the query string parameter "testUserNumber",
-     * or the default value of 1.
-     **/
-    const userNumber = !isNullOrUndefined(testNumber)
-        ? parseInt(testNumber, 10)
-        : 1;
-
-    const windows = [];
-    // Closes all the windows.
-    window.addEventListener("unload", () => {
-        for (const w of windows) {
-            w.close();
-        }
-    });
-    /**
-     * Opens a window that will be closed when the window that opened it is closed.
-     * @param href - the location to load in the window
-     * @param x - the screen position horizontal component
-     * @param y - the screen position vertical component
-     * @param width - the screen size horizontal component
-     * @param height - the screen size vertical component
-     */
-    function openWindow(href, x, y, width, height) {
-        const w = window.open(href, "_blank", `left=${x},top=${y},width=${width},height=${height}`);
-        if (w) {
-            windows.push(w);
-        }
-    }
-    /**
-     * Opens a new window with a query string parameter that can be used to differentiate different test instances.
-     **/
-    function openSideTest() {
-        const loc = new URL(document.location.href);
-        loc.searchParams.set("testUserNumber", (userNumber + windows.length + 1).toString());
-        openWindow(loc.href, window.screenLeft + window.outerWidth, 0, window.innerWidth, window.innerHeight);
-    }
-
     // Chromium-based browsers give the user the option of changing
     // Gets all the named elements in the document so we can
     // setup event handlers on them.
@@ -11102,10 +8939,17 @@
         speakers: document.getElementById("speakers")
     };
     /**
-     * The Calla interface, through which teleconferencing sessions and
-     * user audio positioning is managed.
+     * The Calla loader makes sure all the necessary parts for Calla (specifically,
+     * lib-jitsi-meet, and its transient dependency jQuery) get loaded before
+     * the Calla client is created.
      **/
-    const client = new Calla();
+    const loader = new JitsiOnlyClientLoader(JITSI_HOST, JVB_HOST, JVB_MUC);
+    /**
+     * The Calla interface, through which teleconferencing sessions and
+     * user audio positioning is managed. We'll get an instance of it
+     * after calling loader.load()
+     **/
+    let client = null;
     /**
      * A place to stow references to our users.
      **/
@@ -11118,7 +8962,7 @@
      * We need a "user gesture" to create AudioContext objects. The user clicking
      * on the login button is the most natural place for that.
      **/
-    async function connect() {
+    async function connect$1() {
         const roomName = controls$1.roomName.value;
         const userName = controls$1.userName.value;
         // Validate the user input values...
@@ -11231,7 +9075,7 @@
      * be moved.
      **/
     function update() {
-        client.update();
+        client.audio.update();
         for (let user of users.values()) {
             user.update();
         }
@@ -11346,7 +9190,7 @@
         }
     }
     // =========== BEGIN Wire up events ================
-    controls$1.connect.addEventListener("click", connect);
+    controls$1.connect.addEventListener("click", connect$1);
     controls$1.leave.addEventListener("click", leave);
     controls$1.space.addEventListener("click", (evt) => {
         const x = evt.clientX - controls$1.space.offsetLeft;
@@ -11419,16 +9263,18 @@
         // audio outputs at this time, so disable the control if we
         // detect there is no option to change outputs.
         controls$1.speakers.disabled = !canChangeAudioOutput;
+        client = await loader.load();
+        await client.getMediaPermissions();
         deviceSelector(true, controls$1.cams, await client.getVideoInputDevices(true), client.preferredVideoInputID, (device) => client.setVideoInputDevice(device));
         deviceSelector(true, controls$1.mics, await client.getAudioInputDevices(true), client.preferredAudioInputID, (device) => client.setAudioInputDevice(device));
         deviceSelector(false, controls$1.speakers, await client.getAudioOutputDevices(true), client.preferredAudioOutputID, (device) => client.setAudioOutputDevice(device));
-        await client.prepare(JITSI_HOST, JVB_HOST, JVB_MUC);
         await client.connect();
         // At this point, everything is ready, so we can let 
         // the user attempt to connect to the conference now.
         controls$1.connect.disabled = false;
     })();
     const sideTest = document.getElementById("sideTest");
+    const userNumber = getUserNumber();
     if (userNumber === 1) {
         sideTest.addEventListener("click", openSideTest);
     }

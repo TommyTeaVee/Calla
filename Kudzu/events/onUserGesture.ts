@@ -12,15 +12,15 @@ const gestures = [
     "touchend"
 ];
 
-function identityPromise() {
-    return Promise.resolve();
+function identityPromise(): Promise<boolean> {
+    return Promise.resolve(true);
 }
 
 /**
  * This is not an event handler that you can add to an element. It's a global event that
  * waits for the user to perform some sort of interaction with the website.
   */
-export function onUserGesture(callback: () => void, test?: () => Promise<boolean>) {
+export function onUserGesture(callback: () => any, test?: () => Promise<boolean>) {
     const realTest = isNullOrUndefined(test)
         ? identityPromise
         : test;
@@ -31,11 +31,12 @@ export function onUserGesture(callback: () => void, test?: () => Promise<boolean
                 window.removeEventListener(gesture, check);
             }
 
-            callback();
+            await callback();
         }
-    }
+    };
 
     for (const gesture of gestures) {
         window.addEventListener(gesture, check);
     }
 }
+

@@ -1,8 +1,6 @@
-import { hasImageBitmap, hasOffscreenCanvasRenderingContext2D } from "../html/canvas";
-import { progressCallback } from "../tasks/progressCallback";
 import { WorkerServer } from "../workers/WorkerServer";
+import { BufferAndContentType } from "./BufferAndContentType";
 import { Fetcher } from "./Fetcher";
-import { getPartsReturnType } from "./getPartsReturnType";
 
 export class FetcherWorkerServer extends WorkerServer {
 
@@ -10,62 +8,28 @@ export class FetcherWorkerServer extends WorkerServer {
         super(self);
 
         const fetcher = new Fetcher();
+        addFetcherMethods(this, fetcher);
+    }
+}
 
-        this.add(
-            "getBuffer",
-            (path: string, onProgress: progressCallback) =>
-                fetcher.getBuffer(path, onProgress),
-            (parts: getPartsReturnType) => [parts.buffer]);
+export function addFetcherMethods(server: WorkerServer, fetcher: Fetcher) {
+    server.addMethod("getBuffer", fetcher,
+        (parts: BufferAndContentType) => [parts.buffer]);
 
-        this.add(
-            "postObjectForBuffer",
-            (path: string, obj: any, onProgress: progressCallback) =>
-                fetcher.postObjectForBuffer(path, obj, onProgress),
-            (parts: getPartsReturnType) => [parts.buffer]);
+    server.addMethod("postObjectForBuffer", fetcher,
+        (parts: BufferAndContentType) => [parts.buffer]);
 
-        this.add(
-            "getObject",
-            (path: string, onProgress: progressCallback) =>
-                fetcher.getObject(path, onProgress));
+    server.addMethod("getImageBitmap", fetcher,
+        (imgBmp: ImageBitmap) => [imgBmp]);
 
-        this.add(
-            "postObjectForObject",
-            (path: string, obj: any, onProgress: progressCallback) =>
-                fetcher.postObjectForObject(path, obj, onProgress));
+    server.addMethod("postObjectForImageBitmap", fetcher,
+        (imgBmp: ImageBitmap) => [imgBmp]);
 
-        this.add(
-            "getFile",
-            (path: string, onProgress: progressCallback) =>
-                fetcher.getFile(path, onProgress));
-
-        this.add(
-            "postObjectForFile",
-            (path: string, obj: any, onProgress: progressCallback) =>
-                fetcher.postObjectForFile(path, obj, onProgress));
-
-        if (hasImageBitmap) {
-            this.add(
-                "getImageBitmap",
-                (path: string, onProgress: progressCallback) =>
-                    fetcher.getImageBitmap(path, onProgress),
-                (imgBmp: ImageBitmap) => [imgBmp]);
-
-            this.add(
-                "postObjectForImageBitmap",
-                (path: string, obj: any, onProgress: progressCallback) =>
-                    fetcher.postObjectForImageBitmap(path, obj, onProgress),
-                (imgBmp: ImageBitmap) => [imgBmp]);
-
-            if (hasOffscreenCanvasRenderingContext2D) {
-                this.add(
-                    "getCubes",
-                    (path: string, onProgress: progressCallback) =>
-                        fetcher.getCubesViaImageBitmaps(path, onProgress),
-                    (imgBmps: ImageBitmap[]) => imgBmps);
-
-                this.add(
-                    "renderFace", fetcher.renderImageBitmapFace, (imgBmp: ImageBitmap) => [imgBmp]);
-            }
-        };
-    };
-};
+    server.addMethod("getObject", fetcher);
+    server.addMethod("getFile", fetcher);
+    server.addMethod("getText", fetcher);
+    server.addMethod("postObject", fetcher);
+    server.addMethod("postObjectForObject", fetcher);
+    server.addMethod("postObjectForFile", fetcher);
+    server.addMethod("postObjectForText", fetcher);
+}

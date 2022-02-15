@@ -1,319 +1,274 @@
 import { once } from "../events/once";
 import { waitFor } from "../events/waitFor";
-import { CubeMapFace } from "../graphics2d/CubeMapFace";
-import type { InterpolationType } from "../graphics2d/InterpolationType";
-import {
-    renderCanvasFace,
-    renderCanvasFaces,
-    renderImageBitmapFace,
-    renderImageBitmapFaces
-} from "../graphics2d/renderFace";
-import { sliceCubeMap } from "../graphics2d/sliceCubeMap";
-import {
-    CanvasTypes,
-    createUtilityCanvas,
-    createUtilityCanvasFromImage,
-    createUtilityCanvasFromImageBitmap,
-    hasImageBitmap,
-    MemoryImageTypes
-} from "../html/canvas";
+import { src } from "../html/attrs";
+import { CanvasImageTypes, hasImageBitmap } from "../html/canvas";
+import { isWorker } from "../html/flags";
 import { createScript } from "../html/script";
-import type { progressCallback } from "../tasks/progressCallback";
+import { Img } from "../html/tags";
+import { dumpProgress, progressCallback } from "../tasks/progressCallback";
 import { splitProgress } from "../tasks/splitProgress";
-import { isGoodNumber } from "../typeChecks";
-import { using } from "../using";
-import { getPartsReturnType } from "./getPartsReturnType";
-import { IFetcher } from "./IFetcher";
+import { isDefined, isString, isXHRBodyInit } from "../typeChecks";
+import type { BufferAndContentType } from "./BufferAndContentType";
+import type { IFetcher } from "./IFetcher";
 
-export class Fetcher implements IFetcher {
-    private _getCanvas: (path: string, onProgress?: progressCallback) => Promise<CanvasTypes>;
-    private _getImageData: (path: string, onProgress?: progressCallback) => Promise<ImageData>;
-    private _getCubes: (path: string, onProgress?: progressCallback) => Promise<MemoryImageTypes[]>;
-    private _getEquiMaps: (path: string, interpolation: InterpolationType, maxWidth: number, onProgress?: progressCallback) => Promise<MemoryImageTypes[]>;
+function normalizeMap<KeyT, ValueT>(map: Map<KeyT, ValueT>, key: KeyT, value: ValueT) {
+    const newMap = new Map<KeyT, ValueT>();
 
-    constructor() {
-        this._getCanvas = hasImageBitmap
-            ? this.getCanvasViaImageBitmap
-            : this.getCanvasViaImage;
-
-        this._getImageData = hasImageBitmap
-            ? this.getImageDataViaImageBitmap
-            : this.getImageDataViaImage;
-
-        this._getCubes = hasImageBitmap
-            ? this.getCubesViaImageBitmaps
-            : this.getCubesViaImage;
-
-        this._getEquiMaps = hasImageBitmap
-            ? this.getEquiMapViaImageBitmaps
-            : this.getEquiMapViaImage;
-    }
-
-    async getCanvas(path: string, onProgress?: progressCallback): Promise<CanvasTypes> {
-        return await this._getCanvas(path, onProgress);
-    }
-
-    async getImageData(path: string, onProgress?: progressCallback): Promise<ImageData> {
-        return await this._getImageData(path, onProgress);
-    }
-
-    async getCubes(path: string, onProgress?: progressCallback): Promise<MemoryImageTypes[]> {
-        return await this._getCubes(path, onProgress);
-    }
-
-    async getEquiMaps(path: string, interpolation: InterpolationType, maxWidth: number, onProgress?: progressCallback): Promise<MemoryImageTypes[]> {
-        return await this._getEquiMaps(path, interpolation, maxWidth, onProgress);
-    }
-
-    private async readRequestResponse(path: string, request: Promise<Response>): Promise<Response> {
-        const response = await request;
-
-        if (!response.ok) {
-            throw new Error(`[${response.status}] - ${response.statusText}. Path ${path}`);
+    if (isDefined(map)) {
+        for (const [key, value] of map) {
+            newMap.set(key, value);
         }
 
-        return response;
+        if (!newMap.has(key)) {
+            newMap.set(key, value);
+        }
     }
 
-    private async getResponse(path: string): Promise<Response> {
-        return await this.readRequestResponse(path, fetch(path));
-    }
+    return newMap;
+}
 
-    private async postObjectForResponse<T>(path: string, obj: T): Promise<Response> {
-        return await this.readRequestResponse(path, fetch(path, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(obj)
-        }));
-    }
+export async function fileToImage(file: string) {
+    const img = Img(src(file));
+    await once(img, "loaded");
+    return img;
+}
 
-    private async readResponseBuffer(path: string, response: Response, onProgress?: progressCallback): Promise<getPartsReturnType> {
-        const contentType = response.headers.get("Content-Type");
-        if (!contentType) {
-            throw new Error("Server did not provide a content type");
+function trackXHRProgress(name: string, xhr: XMLHttpRequest, target: (XMLHttpRequest | XMLHttpRequestUpload), onProgress: progressCallback, skipLoading: boolean, prevTask?: Promise<void>): Promise<void> {
+    return new Promise((resolve: () => void, reject: (status: number) => void) => {
+        let prevDone = !prevTask;
+        if (prevTask) {
+            prevTask.then(() => prevDone = true);
         }
 
-        let contentLength = 1;
-        const contentLengthStr = response.headers.get("Content-Length");
-        if (!contentLengthStr) {
-            console.warn(`Server did not provide a content length header. Path: ${path}`);
-        }
-        else {
-            contentLength = parseInt(contentLengthStr, 10);
-            if (!isGoodNumber(contentLength)) {
-                console.warn(`Server did not provide a valid content length header. Value: ${contentLengthStr}, Path: ${path}`);
-                contentLength = 1;
+        let done = false;
+        let loaded = skipLoading;
+        function maybeResolve() {
+            if (loaded && done) {
+                resolve();
             }
         }
 
-        const hasContentLength = isGoodNumber(contentLength);
-        if (!hasContentLength) {
-            contentLength = 1;
-        }
-
-        if (!response.body) {
-            throw new Error("No response body!");
-        }
-
-        const reader = response.body.getReader();
-        const values = [];
-        let receivedLength = 0;
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-                break;
+        async function onError() {
+            if (prevDone) {
+                reject(xhr.status);
             }
+        }
 
-            if (value) {
-                values.push(value);
-                receivedLength += value.length;
-                if (onProgress) {
-                    onProgress(receivedLength, Math.max(receivedLength, contentLength), path);
+        target.addEventListener("loadstart", () => {
+            if (prevDone && !done) {
+                onProgress(0, 1, name);
+            }
+        });
+
+        target.addEventListener("progress", (ev: Event) => {
+            if (prevDone && !done) {
+                const evt = ev as ProgressEvent<XMLHttpRequestEventTarget>;
+                onProgress(evt.loaded, Math.max(evt.loaded, evt.total), name);
+                if (evt.loaded === evt.total) {
+                    loaded = true;
+                    maybeResolve();
                 }
             }
+        });
+
+        target.addEventListener("load", () => {
+            if (prevDone && !done) {
+                onProgress(1, 1, name);
+                done = true;
+                maybeResolve();
+            }
+        });
+
+        target.addEventListener("error", onError);
+        target.addEventListener("abort", onError);
+    });
+}
+
+function setXHRHeaders(xhr: XMLHttpRequest, method: string, path: string, xhrType: XMLHttpRequestResponseType, headers?: Map<string, string>): void {
+    xhr.open(method, path);
+    xhr.responseType = xhrType;
+
+    if (headers) {
+        for (const [key, value] of headers) {
+            xhr.setRequestHeader(key, value);
+        }
+    }
+}
+
+async function blobToBuffer(blob: Blob): Promise<BufferAndContentType> {
+    const buffer = await blob.arrayBuffer();
+    return {
+        buffer,
+        contentType: blob.type
+    };
+}
+
+export class Fetcher implements IFetcher {
+
+    private async getXHR<T>(path: string, xhrType: XMLHttpRequestResponseType, headers?: Map<string, string>, onProgress?: progressCallback): Promise<T> {
+        onProgress = onProgress || dumpProgress;
+
+        const xhr = new XMLHttpRequest();
+
+        const download = trackXHRProgress("downloading: " + path, xhr, xhr, onProgress, true);
+
+        setXHRHeaders(xhr, "GET", path, xhrType, headers);
+
+        xhr.send();
+
+        await download;
+
+        return xhr.response as T;
+    }
+
+    private async postXHR<T>(path: string, xhrType: XMLHttpRequestResponseType, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<T> {
+        onProgress = onProgress || dumpProgress;
+
+        const [upProg, downProg] = splitProgress(onProgress, [1, 1]);
+        const xhr = new XMLHttpRequest();
+
+        const upload = trackXHRProgress("uploading", xhr, xhr.upload, upProg, false);
+        const download = trackXHRProgress("saving", xhr, xhr, downProg, true, upload);
+
+        let body: BodyInit = null;
+
+        if (!(obj instanceof FormData)
+            && isDefined(contentType)) {
+            headers = normalizeMap(headers, "Content-Type", contentType);
         }
 
-        const buffer = new ArrayBuffer(receivedLength);
-        const array = new Uint8Array(buffer);
-        receivedLength = 0;
-        for (const value of values) {
-            array.set(value, receivedLength);
-            receivedLength += value.length;
+        if (isXHRBodyInit(obj) && !isString(obj)) {
+            body = obj;
+        }
+        else if (isDefined(obj)) {
+            body = JSON.stringify(obj);
         }
 
-        if (onProgress) {
-            onProgress(1, 1, path);
+        setXHRHeaders(xhr, "POST", path, xhrType, headers);
+
+        if (isDefined(body)) {
+            xhr.send(body);
+        }
+        else {
+            xhr.send();
         }
 
-        return { buffer, contentType };
+        await upload;
+        await download;
+
+        return xhr.response as T;
     }
 
-    async getBuffer(path: string, onProgress?: progressCallback): Promise<getPartsReturnType> {
-        const response = await this.getResponse(path);
-        return await this.readResponseBuffer(path, response, onProgress);
+    async getBlob(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<Blob> {
+        return await this.getXHR<Blob>(path, "blob", headers, onProgress);
     }
 
-    async postObjectForBuffer<T>(path: string, obj: T, onProgress?: progressCallback): Promise<getPartsReturnType> {
-        const response = await this.postObjectForResponse(path, obj);
-        return await this.readResponseBuffer(path, response, onProgress);
+    async postObjectForBlob(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<Blob> {
+        return await this.postXHR<Blob>(path, "blob", obj, contentType, headers, onProgress);
     }
 
-    async getBlob(path: string, onProgress?: progressCallback): Promise<Blob> {
-        const { buffer, contentType } = await this.getBuffer(path, onProgress);
-        return new Blob([buffer], { type: contentType });
+    async getBuffer(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<BufferAndContentType> {
+        const blob = await this.getBlob(path, headers, onProgress);
+        return await blobToBuffer(blob);
     }
 
-    async postObjectForBlob<T>(path: string, obj: T, onProgress?: progressCallback): Promise<Blob> {
-        const { buffer, contentType } = await this.postObjectForBuffer(path, obj, onProgress);
-        return new Blob([buffer], { type: contentType });
+    async postObjectForBuffer(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<BufferAndContentType> {
+        const blob = await this.postObjectForBlob(path, obj, contentType, headers, onProgress);
+        return await blobToBuffer(blob);
     }
 
-    async getFile(path: string, onProgress?: progressCallback): Promise<string> {
-        const blob = await this.getBlob(path, onProgress);
+    async getFile(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<string> {
+        const blob = await this.getBlob(path, headers, onProgress);
         return URL.createObjectURL(blob);
     }
 
-    async postObjectForFile<T>(path: string, obj: T, onProgress?: progressCallback): Promise<string> {
-        const blob = await this.postObjectForBlob(path, obj, onProgress);
+    async postObjectForFile(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<string> {
+        const blob = await this.postObjectForBlob(path, obj, contentType, headers, onProgress);
         return URL.createObjectURL(blob);
     }
 
-    private async readFileImage(file: string): Promise<HTMLImageElement> {
-        const img = new Image();
-        img.src = file;
-        if (!img.complete) {
-            await once(img, "load", "error");
-        }
-        return img;
+    async getText(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<string> {
+        return await this.getXHR<string>(path, "text", headers, onProgress);
     }
 
-    async getImageBitmap(path: string, onProgress?: progressCallback): Promise<ImageBitmap> {
-        const blob = await this.getBlob(path, onProgress);
+    async postObjectForText(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<string> {
+        return this.postXHR<string>(path, "text", obj, contentType, headers, onProgress);
+    }
+
+    async getObject<T>(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<T> {
+        if (!headers) {
+            headers = new Map<string, string>();
+        }
+
+        if (!headers.has("Accept")) {
+            headers.set("Accept", "application/json");
+        }
+
+        return await this.getXHR<T>(path, "json", headers, onProgress);
+    }
+
+    async postObjectForObject<T>(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<T> {
+        return await this.postXHR<T>(path, "json", obj, contentType, headers, onProgress);
+    }
+
+    async postObject(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<void> {
+        await this.postXHR<void>(path, "", obj, contentType, headers, onProgress);
+    }
+
+    async getXml(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<HTMLElement> {
+        const doc = await this.getXHR<Document>(path, "document", headers, onProgress);
+        return doc.documentElement;
+    }
+
+    async postObjectForXml(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<HTMLElement> {
+        const doc = await this.postXHR<Document>(path, "document", obj, contentType, headers, onProgress);
+        return doc.documentElement;
+    }
+
+    async getImageBitmap(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<ImageBitmap> {
+        const blob = await this.getBlob(path, headers, onProgress);
         return await createImageBitmap(blob);
     }
 
-    async getImage(path: string, onProgress?: progressCallback): Promise<HTMLImageElement> {
-        const file = await this.getFile(path, onProgress);
-        return await this.readFileImage(file);
+    async getCanvasImage(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<CanvasImageTypes> {
+        if (hasImageBitmap) {
+            return await this.getImageBitmap(path, headers, onProgress);
+        }
+        else if (isWorker) {
+            return null;
+        }
+        else {
+            const file = await this.getFile(path, headers, onProgress);
+            return await fileToImage(file);
+        }
     }
 
-    async postObjectForImageBitmap<T>(path: string, obj: T, onProgress?: progressCallback): Promise<ImageBitmap> {
-        const blob = await this.postObjectForBlob(path, obj, onProgress);
+    async postObjectForImageBitmap(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<ImageBitmap> {
+        const blob = await this.postObjectForBlob(path, obj, contentType, headers, onProgress);
         return await createImageBitmap(blob);
     }
 
-    async postObjectForImage<T>(path: string, obj: T, onProgress?: progressCallback): Promise<HTMLImageElement> {
-        const file = await this.postObjectForFile(path, obj, onProgress);
-        return await this.readFileImage(file);
-    }
-
-    private async getCanvasViaImageBitmap(path: string, onProgress?: progressCallback): Promise<CanvasTypes> {
-        return using(await this.getImageBitmap(path, onProgress), (img: ImageBitmap) => {
-            return createUtilityCanvasFromImageBitmap(img);
-        });
-    }
-
-    private async getCanvasViaImage(path: string, onProgress?: progressCallback): Promise<CanvasTypes> {
-        const img = await this.getImage(path, onProgress);
-        return createUtilityCanvasFromImage(img);
-    }
-
-    private readImageData(img: HTMLImageElement | ImageBitmap): ImageData {
-        const canv = createUtilityCanvas(img.width, img.height);
-        const g = canv.getContext("2d");
-        if (!g) {
-            throw new Error("Couldn't create a 2D canvas context");
+    async postObjectForCanvasImage(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<CanvasImageTypes> {
+        if (hasImageBitmap) {
+            return await this.postObjectForImageBitmap(path, obj, contentType, headers, onProgress);
         }
-        g.drawImage(img, 0, 0);
-        return g.getImageData(0, 0, canv.width, canv.height);
-    }
-
-    private async getImageDataViaImageBitmap(path: string, onProgress?: progressCallback): Promise<ImageData> {
-        return using(await this.getImageBitmap(path, onProgress), (img: ImageBitmap) => {
-            return this.readImageData(img);
-        });
-    }
-
-    private async getImageDataViaImage(path: string, onProgress?: progressCallback): Promise<ImageData> {
-        const img = await this.getImage(path, onProgress);
-        return this.readImageData(img);
-    }
-
-    async getCubesViaImageBitmaps(path: string, onProgress?: progressCallback): Promise<ImageBitmap[]> {
-        const img = await this.getImageBitmap(path, onProgress);
-        const canvs = sliceCubeMap(img);
-        return await Promise.all(canvs.map((canv) => createImageBitmap(canv)));
-    }
-
-    private async getCubesViaImage(path: string, onProgress?: progressCallback): Promise<CanvasTypes[]> {
-        const img = await this.getImage(path, onProgress);
-        return sliceCubeMap(img);
-    }
-
-    async getEquiMapViaImageBitmaps(path: string, interpolation: InterpolationType, maxWidth: number, onProgress?: progressCallback): Promise<ImageBitmap[]> {
-        const splits = splitProgress(onProgress, [1, 6]);
-        const imgData = await this.getImageDataViaImageBitmap(path, splits.shift());
-        return await renderImageBitmapFaces(renderImageBitmapFace, imgData, interpolation, maxWidth, splits.shift());
-    }
-
-    private async getEquiMapViaImage(path: string, interpolation: InterpolationType, maxWidth: number, onProgress?: progressCallback): Promise<CanvasTypes[]> {
-        const splits = splitProgress(onProgress, [1, 6]);
-        const imgData = await this.getImageDataViaImage(path, splits.shift());
-        return await renderCanvasFaces(renderCanvasFace, imgData, interpolation, maxWidth, splits.shift());
-    }
-
-    private readBufferText(buffer: ArrayBuffer): string {
-        const decoder = new TextDecoder("utf-8");
-        const text = decoder.decode(buffer);
-        return text;
-    }
-
-    async getText(path: string, onProgress?: progressCallback): Promise<string> {
-        const { buffer } = await this.getBuffer(path, onProgress);
-        return this.readBufferText(buffer);
-    }
-
-    async postObjectForText<T>(path: string, obj: T, onProgress?: progressCallback): Promise<string> {
-        const { buffer } = await this.postObjectForBuffer(path, obj, onProgress);
-        return this.readBufferText(buffer);
-    }
-
-    async getObject<T>(path: string, onProgress?: progressCallback): Promise<T> {
-        const text = await this.getText(path, onProgress);
-        return JSON.parse(text) as T;
-    }
-
-    async postObjectForObject<T, U>(path: string, obj: T, onProgress?: progressCallback): Promise<U> {
-        const text = await this.postObjectForText(path, obj, onProgress);
-        return JSON.parse(text) as U;
-    }
-
-    async postObject<T>(path: string, obj: T): Promise<void> {
-        await this.postObjectForResponse(path, obj);
-    }
-
-    private readTextXml(text: string): HTMLElement {
-        const parser = new DOMParser();
-        const xml = parser.parseFromString(text, "text/xml");
-        return xml.documentElement;
-    }
-
-    async getXml(path: string, onProgress?: progressCallback): Promise<HTMLElement> {
-        const text = await this.getText(path, onProgress);
-        return this.readTextXml(text);
-    }
-
-    async postObjectForXml<T>(path: string, obj: T, onProgress?: progressCallback): Promise<HTMLElement> {
-        const text = await this.postObjectForText(path, obj, onProgress);
-        return this.readTextXml(text);
+        else if (isWorker) {
+            return null;
+        }
+        else {
+            const file = await this.postObjectForFile(path, obj, contentType, headers, onProgress);
+            return await fileToImage(file);
+        }
     }
 
     async loadScript(path: string, test: () => boolean, onProgress?: progressCallback): Promise<void> {
+        if (isWorker) {
+            return;
+        }
+
         if (!test()) {
             const scriptLoadTask = waitFor(test);
-            const file = await this.getFile(path, onProgress);
+            const file = await this.getFile(path, null, onProgress);
             createScript(file);
             await scriptLoadTask;
         }
@@ -322,7 +277,12 @@ export class Fetcher implements IFetcher {
         }
     }
 
-    async renderImageBitmapFace(readData: ImageData, faceName: CubeMapFace, interpolation: InterpolationType, maxWidth: number, onProgress?: progressCallback): Promise<ImageBitmap> {
-        return await renderImageBitmapFace(readData, faceName, interpolation, maxWidth, onProgress);
+    async getWASM<T>(path: string, imports: Record<string, Record<string, WebAssembly.ImportValue>>, onProgress?: progressCallback): Promise<T> {
+        const wasmBuffer = await this.getBuffer(path, null, onProgress);
+        if (wasmBuffer.contentType !== "application/wasm") {
+            throw new Error("Server did not respond with WASM file. Was: " + wasmBuffer.contentType);
+        }
+        const wasmModule = await WebAssembly.instantiate(wasmBuffer.buffer, imports);
+        return (wasmModule.instance.exports as any) as T;
     }
 }

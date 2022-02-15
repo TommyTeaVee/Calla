@@ -2,10 +2,11 @@ const commonjs = require("@rollup/plugin-commonjs");
 const json = require("@rollup/plugin-json");
 const { nodeResolve } = require("@rollup/plugin-node-resolve");
 const replace = require("@rollup/plugin-replace");
-const typescript = require("@rollup/plugin-typescript");
-const glslify = require("rollup-plugin-glslify");
 const sourcemaps = require("rollup-plugin-sourcemaps");
 const { terser } = require("rollup-plugin-terser");
+const glslify = require("rollup-plugin-glslify");
+const del = require("rollup-plugin-delete");
+const fs = require("fs");
 
 module.exports.warnings = {
     and(a, b) {
@@ -54,23 +55,54 @@ function coallesceOptions(options, isProduction) {
     return options;
 }
 
+function clean(name, outputDir) {
+    const paths = [
+        `${outputDir}/${name}.js`,
+        `${outputDir}/${name}.js.map`,
+        `${outputDir}/${name}.min.js`,
+        `${outputDir}/${name}.min.js.map`
+    ];
+
+    for (const path of paths) {
+        const stat = fs.statSync(path);
+        if (stat) {
+            console.log(`Deleting ${path}`);
+            fs.unlinkSync(path);
+        }
+    }
+}
+
 function makeBundle(name, input, outputDir, format, isProduction, options) {
     options = coallesceOptions(options, isProduction);
+
+    const replaceOpts = Object.assign({
+        preventAssignment: true,
+        "const isWorker = false": options.isWorker ? "const isWorker = true" : "const isWorker = false",
+        "process.env.NODE_ENV": JSON.stringify(isProduction ? "production" : "development"),
+        "__filename": function (match) {
+            const curDir = process.cwd().replace('\\', '/');
+            let path = match.replace('\\', '/');
+            path = path.substring(curDir.length);
+            return JSON.stringify(path);
+        }
+    }, options.replace);
 
     const opts = {
         input,
         plugins: [
+            glslify({
+                include: [
+                    /\.vs$/,
+                    /\.fs$/,
+                    /\.vert$/,
+                    /\.frag$/,
+                    /\.glsl$/
+                ],
+                compress: true
+            }),
             nodeResolve(),
             commonjs(),
-            replace({
-                "process.env.NODE_ENV": JSON.stringify(isProduction ? "production" : "development"),
-                "__filename": function (match) {
-                    const curDir = process.cwd().replace('\\', '/');
-                    let path = match.replace('\\', '/');
-                    path = path.substring(curDir.length);
-                    return JSON.stringify(path);
-                }
-            }),
+            replace(replaceOpts),
             json()
         ],
         output: {
@@ -83,12 +115,8 @@ function makeBundle(name, input, outputDir, format, isProduction, options) {
         }
     };
 
-    if (options.webgl) {
-        opts.plugins.push(glslify());
-    }
-
-    if (/\.ts$/.test(input)) {
-        opts.plugins.push(typescript());
+    if (options.plugins) {
+        opts.plugins.push(...options.plugins);
     }
 
     opts.plugins.push(sourcemaps());
@@ -121,20 +149,28 @@ function makeBundle(name, input, outputDir, format, isProduction, options) {
 
 module.exports.makeBundles = function makeBundles(name, inputFile, outputDir, format, options) {
     const tasks = [];
-    const inDevelopment = process.env.BUILD === "development"
-        || process.env.BUILD === "all";
-    const inProduction = process.env.BUILD === "production"
-        || process.env.BUILD === "all";
     const inBuild = process.env.PROJECT === "all"
         || process.env.PROJECT === name;
     if (inBuild) {
-        if (inDevelopment) {
+        const isDevelopment = process.env.BUILD === "development"
+            || process.env.BUILD === "all";
+        const isProduction = process.env.BUILD === "production"
+            || process.env.BUILD === "all";
+        const isClean = process.env.BUILD === "clean";
+
+        if (isDevelopment) {
             console.log("\tIncluding:", name, "development");
             tasks.push(makeBundle(name, inputFile, outputDir, format, false, options));
         }
-        if (inProduction) {
+
+        if (isProduction) {
             console.log("\tIncluding:", name, "production");
             tasks.push(makeBundle(name, inputFile, outputDir, format, true, options));
+        }
+
+        if (isClean) {
+            console.log("\Cleaning:", name);
+            clean(name, outputDir);
         }
     }
     return tasks;

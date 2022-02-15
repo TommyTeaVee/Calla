@@ -1,13 +1,87 @@
-import { isBoolean, isDate, isNullOrUndefined, isNumber, isString } from "../typeChecks";
-import { Attr, type, margin, styles } from "./attrs";
-function hasNode(obj) {
-    return !isNullOrUndefined(obj)
-        && !isString(obj)
-        && !isNumber(obj)
-        && !isBoolean(obj)
-        && !isDate(obj)
+import { isBoolean, isDate, isDefined, isFunction, isNumber, isObject, isString } from "../typeChecks";
+import { Attr, type } from "./attrs";
+import { margin, styles } from "./css";
+export function isErsatzElement(obj) {
+    return isObject(obj)
         && "element" in obj
         && obj.element instanceof Node;
+}
+export function isErsatzElements(obj) {
+    return isObject(obj)
+        && "elements" in obj
+        && obj.elements instanceof Array;
+}
+export function isIElementAppliable(obj) {
+    return isObject(obj)
+        && "applyToElement" in obj
+        && isFunction(obj.applyToElement);
+}
+export function isElementChild(obj) {
+    return obj instanceof Node
+        || isErsatzElement(obj)
+        || isErsatzElements(obj)
+        || isIElementAppliable(obj)
+        || isString(obj)
+        || isNumber(obj)
+        || isBoolean(obj)
+        || isDate(obj);
+}
+export function isFocusable(elem) {
+    return "focus" in elem && isFunction(elem.focus);
+}
+export function elementSetDisplay(elem, visible, visibleDisplayType = "block") {
+    if (isErsatzElement(elem)) {
+        elem = elem.element;
+    }
+    elem.style.display = visible ? visibleDisplayType : "none";
+}
+export function elementIsDisplayed(elem) {
+    if (isErsatzElement(elem)) {
+        elem = elem.element;
+    }
+    return elem.style.display !== "none";
+}
+export function elementToggleDisplay(elem, visibleDisplayType = "block") {
+    elementSetDisplay(elem, !elementIsDisplayed(elem), visibleDisplayType);
+}
+export function elementApply(elem, ...children) {
+    if (isErsatzElement(elem)) {
+        elem = elem.element;
+    }
+    for (let child of children) {
+        if (isDefined(child)) {
+            if (child instanceof Node) {
+                elem.append(child);
+            }
+            else if (isErsatzElement(child)) {
+                elem.append(child.element);
+            }
+            else if (isErsatzElements(child)) {
+                elem.append(...child.elements);
+            }
+            else if (isIElementAppliable(child)) {
+                child.applyToElement(elem);
+            }
+            else {
+                elem.append(document.createTextNode(child.toLocaleString()));
+            }
+        }
+    }
+}
+export function getElement(selector) {
+    return document.querySelector(selector);
+}
+export function getButton(selector) {
+    return getElement(selector);
+}
+export function getInput(selector) {
+    return getElement(selector);
+}
+export function getSelect(selector) {
+    return getElement(selector);
+}
+export function getCanvas(selector) {
+    return getElement(selector);
 }
 /**
  * Creates an HTML element for a given tag name.
@@ -22,8 +96,7 @@ function hasNode(obj) {
 export function tag(name, ...rest) {
     let elem = null;
     for (const attr of rest) {
-        if (attr instanceof Attr
-            && attr.key === "id") {
+        if (attr instanceof Attr && attr.key === "id") {
             elem = document.getElementById(attr.value);
             break;
         }
@@ -31,39 +104,30 @@ export function tag(name, ...rest) {
     if (elem == null) {
         elem = document.createElement(name);
     }
-    for (let x of rest) {
-        if (x != null) {
-            if (isString(x)
-                || isNumber(x)
-                || isBoolean(x)
-                || x instanceof Date
-                || x instanceof Node
-                || hasNode(x)) {
-                if (hasNode(x)) {
-                    x = x.element;
-                }
-                else if (!(x instanceof Node)) {
-                    x = document.createTextNode(x.toLocaleString());
-                }
-                elem.appendChild(x);
-            }
-            else {
-                if (x instanceof Function) {
-                    x = x(true);
-                }
-                x.apply(elem);
-            }
-        }
-    }
+    elementApply(elem, ...rest);
     return elem;
+}
+export function isDisableable(obj) {
+    return "disabled" in obj
+        && typeof obj.disabled === "boolean";
 }
 /**
  * Empty an element of all children. This is faster than setting `innerHTML = ""`.
  */
 export function elementClearChildren(elem) {
+    if (isErsatzElement(elem)) {
+        elem = elem.element;
+    }
     while (elem.lastChild) {
         elem.lastChild.remove();
     }
+}
+export function elementSetText(elem, text) {
+    if (isErsatzElement(elem)) {
+        elem = elem.element;
+    }
+    elementClearChildren(elem);
+    elem.appendChild(TextNode(text));
 }
 export function A(...rest) { return tag("a", ...rest); }
 export function Abbr(...rest) { return tag("abbr", ...rest); }
@@ -163,7 +227,6 @@ export function Small(...rest) { return tag("small", ...rest); }
 export function Source(...rest) { return tag("source", ...rest); }
 export function Span(...rest) { return tag("span", ...rest); }
 export function Strong(...rest) { return tag("strong", ...rest); }
-export function Style(...rest) { return tag("style", ...rest); }
 export function Sub(...rest) { return tag("sub", ...rest); }
 export function Summary(...rest) { return tag("summary", ...rest); }
 export function Sup(...rest) { return tag("sup", ...rest); }
@@ -225,6 +288,10 @@ export function InputImage(...rest) { return Input(type("image"), ...rest); }
  */
 export function InputMonth(...rest) { return Input(type("month"), ...rest); }
 /**
+ * creates an HTML Input tag that is a month picker.
+ */
+export function InputNumber(...rest) { return Input(type("number"), ...rest); }
+/**
  * creates an HTML Input tag that is a password entry field.
  */
 export function InputPassword(...rest) { return Input(type("password"), ...rest); }
@@ -279,5 +346,13 @@ export function TextNode(txt) {
  */
 export function Run(...rest) {
     return Div(styles(margin("auto")), ...rest);
+}
+export function Style(...rest) {
+    let elem = document.createElement("style");
+    document.head.appendChild(elem);
+    for (let x of rest) {
+        x.apply(elem.sheet);
+    }
+    return elem;
 }
 //# sourceMappingURL=tags.js.map

@@ -1,5 +1,9 @@
 import { TypedEvent } from "kudzu/events/EventBase";
 import { FormDialog, FormDialogEvents } from "./FormDialog";
+interface RoomEntry {
+    value: string;
+    text: string;
+}
 interface LoginFormEvents extends FormDialogEvents {
     login: TypedEvent<"login">;
 }
@@ -7,17 +11,12 @@ export declare class LoginForm extends FormDialog<LoginFormEvents> {
     private _ready;
     private _connecting;
     private _connected;
-    private roomSelectControl;
-    private roomEntryControl;
-    private roomSelect;
-    private roomInput;
+    private roomNameInput;
     private userNameInput;
     private emailInput;
     private connectButton;
-    constructor();
+    constructor(rooms: RoomEntry[]);
     private validate;
-    get roomSelectMode(): boolean;
-    set roomSelectMode(value: boolean);
     get roomName(): string;
     set roomName(v: string);
     set userName(value: string);

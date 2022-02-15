@@ -1,42 +1,17 @@
-export declare type workerServerMethod = (taskID: number, ...params: any[]) => Promise<void>;
-export declare type workerServerCreateTransferableCallback<T> = (returnValue: T) => Transferable[];
-export declare enum WorkerMethodMessageType {
-    Error = "error",
-    Progress = "progress",
-    Return = "return",
-    ReturnValue = "returnValue"
-}
-interface WorkerMethodMessage<T extends WorkerMethodMessageType> {
-    taskID: number;
-    methodName: T;
-}
-export interface WorkerMethodErrorMessage extends WorkerMethodMessage<WorkerMethodMessageType.Error> {
-    errorMessage: string;
-}
-export interface WorkerMethodProgressMessage extends WorkerMethodMessage<WorkerMethodMessageType.Progress> {
-    soFar: number;
-    total: number;
-    msg: number;
-}
-export interface WorkerMethodReturnMessage extends WorkerMethodMessage<WorkerMethodMessageType.Return> {
-}
-export interface WorkerMethodReturnValueMessage extends WorkerMethodMessage<WorkerMethodMessageType.ReturnValue> {
-    returnValue: any;
-}
-export declare type WorkerMethodMessages = WorkerMethodErrorMessage | WorkerMethodProgressMessage | WorkerMethodReturnMessage | WorkerMethodReturnValueMessage;
-export interface WorkerMethodCallMessage {
-    taskID: number;
-    methodName: string;
-    params: any[];
-}
+import { EventBase } from "../events/EventBase";
+declare type createTransferableCallback<T> = (returnValue: T) => Transferable[];
 export declare class WorkerServer {
     private self;
     private methods;
+    private properties;
     /**
      * Creates a new worker thread method call listener.
      * @param self - the worker scope in which to listen.
      */
     constructor(self: DedicatedWorkerGlobalScope);
+    private setProperty;
+    private callMethod;
+    private postMessage;
     /**
      * Report an error back to the calling thread.
      * @param taskID - the invocation ID of the method that errored.
@@ -44,7 +19,8 @@ export declare class WorkerServer {
      */
     private onError;
     /**
-     * Report progress through long-running invocations.
+     * Report progress through long-running invocations. If your invocable
+     * functions don't report progress, this can be safely ignored.
      * @param taskID - the invocation ID of the method that is updating.
      * @param soFar - how much of the process we've gone through.
      * @param total - the total amount we need to go through.
@@ -52,18 +28,45 @@ export declare class WorkerServer {
      */
     private onProgress;
     /**
-     * Return the results back to the invoker.
-     * @param taskID - the invocation ID of the method that has completed.
-     * @param returnValue - the (optional) value that is being returned.
-     * @param transferables - an (optional) array of values that appear in the return value that should be transfered back to the calling thread, rather than copied.
+     * Return back to the client.
+     * @param taskID - the invocation ID of the method that is returning.
+     * @param returnValue - the (optional) value to return.
+     * @param transferReturnValue - a mapping function to extract any Transferable objects from the return value.
      */
     private onReturn;
+    private onEvent;
+    private onPropertyInitialized;
+    private onPropertyChanged;
+    private addMethodInternal;
+    addProperty(obj: any, name: string): void;
     /**
      * Registers a function call for cross-thread invocation.
      * @param methodName - the name of the method to use during invocations.
-     * @param asyncFunc - the function to execute when the method is invoked.
+     * @param obj - the object on which to find the method.
+     */
+    addMethod<T>(methodName: string, obj: any): void;
+    /**
+     * Registers a function call for cross-thread invocation.
+     * @param methodName - the name of the method to use during invocations.
+     * @param obj - the object on which to find the method.
      * @param transferReturnValue - an (optional) function that reports on which values in the `returnValue` should be transfered instead of copied.
      */
-    add<T>(methodName: string, asyncFunc: (...args: any[]) => Promise<T>, transferReturnValue?: workerServerCreateTransferableCallback<T>): void;
+    addMethod<T>(methodName: string, obj: any, transferReturnValue: createTransferableCallback<T>): void;
+    /**
+     * Registers a function call for cross-thread invocation.
+     * @param methodName - the name of the method to use during invocations.
+     * @param asyncFuncOrObject - the function to execute when the method is invoked.
+     */
+    addMethod<T>(methodName: string, asyncFunc: (...args: any[]) => Promise<T>): void;
+    /**
+     * Registers a function call for cross-thread invocation.
+     * @param methodName - the name of the method to use during invocations.
+     * @param asyncFuncOrObject - the function to execute when the method is invoked.
+     * @param transferReturnValue - an (optional) function that reports on which values in the `returnValue` should be transfered instead of copied.
+     */
+    addMethod<T>(methodName: string, asyncFunc: (...args: any[]) => Promise<T>, transferReturnValue: createTransferableCallback<T>): void;
+    addEvent<U extends EventBase, T>(object: U, type: string): void;
+    addEvent<U extends EventBase, T>(object: U, type: string, makePayload: (evt: Event) => T): void;
+    addEvent<U extends EventBase, T>(object: U, type: string, makePayload: (evt: Event) => T, transferReturnValue: createTransferableCallback<T>): void;
 }
 export {};

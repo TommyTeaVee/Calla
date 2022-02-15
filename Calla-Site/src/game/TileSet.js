@@ -1,14 +1,16 @@
 export class TileSet {
+    url;
+    fetcher;
+    name = null;
+    tileWidth = 0;
+    tileHeight = 0;
+    tilesPerRow = 0;
+    tileCount = 0;
+    image = null;
+    collision = new Map();
     constructor(url, fetcher) {
         this.url = url;
         this.fetcher = fetcher;
-        this.name = null;
-        this.tileWidth = 0;
-        this.tileHeight = 0;
-        this.tilesPerRow = 0;
-        this.tileCount = 0;
-        this.image = null;
-        this.collision = new Map();
     }
     async load() {
         const tileset = await this.fetcher.getXml(this.url.href);
@@ -27,7 +29,8 @@ export class TileSet {
         this.tileWidth = parseInt(tileset.getAttribute("tilewidth"), 10);
         this.tileHeight = parseInt(tileset.getAttribute("tileheight"), 10);
         this.tileCount = parseInt(tileset.getAttribute("tilecount"), 10);
-        this.image = await this.fetcher.getImage(imageURL.href);
+        this.image = await this.fetcher.getCanvasImage(imageURL.href);
+        this.tilesPerRow = Math.floor(this.image.width / this.tileWidth);
     }
     isClear(tile) {
         return !this.collision.get(tile - 1);

@@ -1,21 +1,27 @@
-import { userNumber } from "./userNumber";
+import { isWorker } from "../html/flags";
+import { isNumber } from "../typeChecks";
+import { getUserNumber } from "./userNumber";
 const windows = [];
-// Closes all the windows.
-window.addEventListener("unload", () => {
-    for (const w of windows) {
-        w.close();
+if (!isWorker) {
+    // Closes all the windows.
+    window.addEventListener("unload", () => {
+        for (const w of windows) {
+            w.close();
+        }
+    });
+}
+export function openWindow(href, xOrWidth, yOrHeight, width, height) {
+    if (isWorker) {
+        throw new Error("Cannot open a window from a Worker.");
     }
-});
-/**
- * Opens a window that will be closed when the window that opened it is closed.
- * @param href - the location to load in the window
- * @param x - the screen position horizontal component
- * @param y - the screen position vertical component
- * @param width - the screen size horizontal component
- * @param height - the screen size vertical component
- */
-function openWindow(href, x, y, width, height) {
-    const w = window.open(href, "_blank", `left=${x},top=${y},width=${width},height=${height}`);
+    let opts = undefined;
+    if (isNumber(width) && isNumber(height)) {
+        opts = `left=${xOrWidth},top=${yOrHeight},width=${width},height=${height}`;
+    }
+    else if (isNumber(xOrWidth) && isNumber(yOrHeight)) {
+        opts = `width=${xOrWidth},height=${yOrHeight}`;
+    }
+    const w = window.open(href, "_blank", opts);
     if (w) {
         windows.push(w);
     }
@@ -24,8 +30,11 @@ function openWindow(href, x, y, width, height) {
  * Opens a new window with a query string parameter that can be used to differentiate different test instances.
  **/
 export function openSideTest() {
-    const loc = new URL(document.location.href);
-    loc.searchParams.set("testUserNumber", (userNumber + windows.length + 1).toString());
+    if (isWorker) {
+        throw new Error("Cannot open a window from a Worker.");
+    }
+    const loc = new URL(location.href);
+    loc.searchParams.set("testUserNumber", (getUserNumber() + windows.length + 1).toString());
     openWindow(loc.href, window.screenLeft + window.outerWidth, 0, window.innerWidth, window.innerHeight);
 }
 //# sourceMappingURL=windowing.js.map

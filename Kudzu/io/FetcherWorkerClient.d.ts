@@ -1,20 +1,28 @@
-import { InterpolationType } from "../graphics2d/InterpolationType";
-import { MemoryImageTypes } from "../html/canvas";
-import { progressCallback } from "../tasks/progressCallback";
+import type { CanvasImageTypes } from "../html/canvas";
+import type { progressCallback } from "../tasks/progressCallback";
 import { WorkerClient } from "../workers/WorkerClient";
-import { Fetcher } from "./Fetcher";
-import { getPartsReturnType } from "./getPartsReturnType";
-export declare class FetcherWorkerClient extends Fetcher {
-    worker: WorkerClient;
-    constructor(scriptPath: string, minScriptPath: string, workerPoolSize?: number);
-    getBuffer(path: string, onProgress?: progressCallback): Promise<getPartsReturnType>;
-    postObjectForBuffer<T>(path: string, obj: T, onProgress?: progressCallback): Promise<getPartsReturnType>;
-    getObject<T>(path: string, onProgress?: progressCallback): Promise<T>;
-    postObjectForObject<T, U>(path: string, obj: T, onProgress?: progressCallback): Promise<U>;
-    getFile(path: string, onProgress?: progressCallback): Promise<string>;
-    postObjectForFile<T>(path: string, obj: T, onProgress?: progressCallback): Promise<string>;
-    getImageBitmap(path: string, onProgress?: progressCallback): Promise<ImageBitmap>;
-    postObjectForImageBitmap<T>(path: string, obj: T, onProgress?: progressCallback): Promise<ImageBitmap>;
-    getCubes(path: string, onProgress?: progressCallback): Promise<MemoryImageTypes[]>;
-    getEquiMaps(path: string, interpolation: InterpolationType, maxWidth: number, onProgress?: progressCallback): Promise<MemoryImageTypes[]>;
+import type { BufferAndContentType } from "./BufferAndContentType";
+import { IFetcher } from "./IFetcher";
+export declare abstract class BaseFetcherWorkerClient<EventsT> extends WorkerClient<EventsT> implements IFetcher {
+    getBuffer(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<BufferAndContentType>;
+    getBlob(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<Blob>;
+    getText(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<string>;
+    getXml(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<HTMLElement>;
+    getObject<T>(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<T>;
+    getFile(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<string>;
+    getImageBitmap(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<ImageBitmap>;
+    getCanvasImage(path: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<CanvasImageTypes>;
+    postObject(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<void>;
+    postObjectForBuffer(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<BufferAndContentType>;
+    postObjectForBlob(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<Blob>;
+    postObjectForText(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<string>;
+    postObjectForXml(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<HTMLElement>;
+    postObjectForObject<T>(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<T>;
+    postObjectForFile(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<string>;
+    postObjectForImageBitmap(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<ImageBitmap>;
+    postObjectForCanvasImage(path: string, obj: any, contentType: string, headers?: Map<string, string>, onProgress?: progressCallback): Promise<CanvasImageTypes>;
+    loadScript(path: string, test: () => boolean, onProgress?: progressCallback): Promise<void>;
+    getWASM<T>(path: string, imports: Record<string, Record<string, WebAssembly.ImportValue>>, onProgress?: progressCallback): Promise<T>;
+}
+export declare class FetcherWorkerClient extends BaseFetcherWorkerClient<void> {
 }

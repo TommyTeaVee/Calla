@@ -1,4 +1,4 @@
-import { isSurfer } from "kudzu/emoji/emojis";
+import { isSurfer } from "kudzu/emoji/isSurfer";
 import { TextImage } from "kudzu/graphics2d/TextImage";
 import { setContextSize } from "kudzu/html/canvas";
 import { AvatarMode } from "./AvatarMode";
@@ -26,7 +26,7 @@ export class EmojiAvatar extends BaseAvatar {
 
         const emojiText = new TextImage();
 
-        emojiText.fillColor = (emoji as any).color || "black";
+        emojiText.textFillColor = (emoji as any).color || "black";
         emojiText.fontFamily = "Noto Color Emoji";
         emojiText.fontSize = 256;
         emojiText.value = this.value;

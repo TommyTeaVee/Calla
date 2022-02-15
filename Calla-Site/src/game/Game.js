@@ -1,3 +1,4 @@
+import { InterpolatedPose } from "calla/audio/positions/InterpolatedPose";
 import { arrayClear } from "kudzu/arrays/arrayClear";
 import { TypedEvent, TypedEventBase } from "kudzu/events/EventBase";
 import { id } from "kudzu/html/attrs";
@@ -8,7 +9,6 @@ import { clamp } from "kudzu/math/clamp";
 import { lerp } from "kudzu/math/lerp";
 import { project } from "kudzu/math/project";
 import { unproject } from "kudzu/math/unproject";
-import { isString } from "kudzu/typeChecks";
 import { Emote, EmoteEvent } from "./Emote";
 import { hide, show } from "./forms/ops";
 import { ScreenPointerControls } from "./ScreenPointerControls";
@@ -18,40 +18,48 @@ const CAMERA_LERP = 0.01, CAMERA_ZOOM_SHAPE = 2, MOVE_REPEAT = 0.125, gameStarte
 /** @type {Map<Game, EventedGamepad>} */
 const gamepads = new Map();
 export class Game extends TypedEventBase {
+    fetcher;
+    zoomMin;
+    zoomMax;
+    waypoints = new Array();
+    users = new Map();
+    emotes = new Array();
+    keys = new Map();
+    lastMove = Number.MAX_VALUE;
+    lastWalk = Number.MAX_VALUE;
+    gridOffsetX = 0;
+    gridOffsetY = 0;
+    fontSize = 0;
+    cameraX = 0;
+    offsetCameraX = 0;
+    targetOffsetCameraX = 0;
+    cameraY = 0;
+    offsetCameraY = 0;
+    targetOffsetCameraY = 0;
+    cameraZ = 1.5;
+    targetCameraZ = 1.5;
+    drawHearing = false;
+    audioDistanceMin = 2;
+    audioDistanceMax = 10;
+    rolloff = 5;
+    lastGamepadIndex = -1;
+    gamepadIndex = -1;
+    transitionSpeed = 0.125;
+    keyboardEnabled = true;
+    map = null;
+    currentRoomName = null;
+    currentEmoji = null;
+    me;
+    element;
+    gFront;
+    inputBinding;
+    screenControls;
     constructor(fetcher, zoomMin, zoomMax) {
         super();
         this.fetcher = fetcher;
         this.zoomMin = zoomMin;
         this.zoomMax = zoomMax;
-        this.waypoints = new Array();
-        this.users = new Map();
-        this.emotes = new Array();
-        this.keys = new Map();
-        this.lastMove = Number.MAX_VALUE;
-        this.lastWalk = Number.MAX_VALUE;
-        this.gridOffsetX = 0;
-        this.gridOffsetY = 0;
-        this.fontSize = 0;
-        this.cameraX = 0;
-        this.offsetCameraX = 0;
-        this.targetOffsetCameraX = 0;
-        this.cameraY = 0;
-        this.offsetCameraY = 0;
-        this.targetOffsetCameraY = 0;
-        this.cameraZ = 1.5;
-        this.targetCameraZ = 1.5;
-        this.drawHearing = false;
-        this.audioDistanceMin = 2;
-        this.audioDistanceMax = 10;
-        this.rolloff = 5;
-        this.lastGamepadIndex = -1;
-        this.gamepadIndex = -1;
-        this.transitionSpeed = 0.125;
-        this.keyboardEnabled = true;
-        this.me = null;
-        this.map = null;
-        this.currentRoomName = null;
-        this.currentEmoji = null;
+        this.me = new User("local", "Me", new InterpolatedPose(), true);
         this.element = Canvas(id("frontBuffer"));
         this.gFront = this.element.getContext("2d");
         this.audioDistanceMin = 2;
@@ -140,12 +148,13 @@ export class Game extends TypedEventBase {
                     this.dispatchEvent(emojiNeededEvt);
                 }
                 else {
-                    emoteEvt.emoji = this.currentEmoji = emoji;
+                    this.currentEmoji = emoji;
+                    emoteEvt.emoji = emoji.value;
                     this.dispatchEvent(emoteEvt);
                 }
             }
             if (emoji) {
-                this.emotes.push(new Emote(emoji, user.x, user.y));
+                this.emotes.push(new Emote(emoji.value, user.x, user.y));
             }
         }
     }
@@ -280,12 +289,11 @@ export class Game extends TypedEventBase {
             user.setAvatarEmoji(emoji.value);
         });
     }
-    async startAsync(id, displayName, pose, avatarURL, roomName) {
+    async startAsync(id, displayName, pose, roomName) {
         this.currentRoomName = roomName.toLowerCase();
-        this.me = new User(id, displayName, pose, true);
-        if (isString(avatarURL)) {
-            this.me.setAvatarImage(avatarURL);
-        }
+        this.me.id = id;
+        this.me.displayName = displayName;
+        this.me.pose = pose;
         this.users.set(id, this.me);
         this.map = new TileMap(this.currentRoomName, this.fetcher);
         let success = false;
@@ -324,7 +332,6 @@ export class Game extends TypedEventBase {
         this.currentRoomName = null;
         this.map = null;
         this.users.clear();
-        this.me = null;
         hide(this.element);
         this.dispatchEvent(gameEndedEvt);
     }

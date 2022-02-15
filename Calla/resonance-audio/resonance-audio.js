@@ -18,6 +18,8 @@
  * @author Andrew Allen <bitllama@google.com>
  */
 import { vec3 } from "gl-matrix";
+import { arrayRemoveAt } from "kudzu/arrays/arrayRemoveAt";
+import { connect, disconnect, Gain } from "kudzu/audio";
 import { Encoder } from './encoder';
 import { Listener } from './listener';
 import { Room } from './room';
@@ -27,6 +29,14 @@ import { DEFAULT_AMBISONIC_ORDER, DEFAULT_FORWARD, DEFAULT_POSITION, DEFAULT_REN
  * Main class for managing sources, room and listener models.
  */
 export class ResonanceAudio {
+    _sources;
+    listener;
+    room;
+    ambisonicOrder;
+    context;
+    output;
+    ambisonicOutput;
+    ambisonicInput;
     /**
      * Main class for managing sources, room and listener models.
      * @param context
@@ -56,7 +66,7 @@ export class ResonanceAudio {
             materials: options.materials,
             speedOfSound: options.speedOfSound,
         });
-        this.listener = new Listener(context, {
+        this.listener = new Listener({
             ambisonicOrder: options.ambisonicOrder,
             position: options.listenerPosition,
             forward: options.listenerForward,
@@ -65,13 +75,13 @@ export class ResonanceAudio {
         });
         // Create auxillary audio nodes.
         this.context = context;
-        this.output = context.createGain();
-        this.ambisonicOutput = context.createGain();
+        this.output = Gain("resonance-output");
+        this.ambisonicOutput = Gain("resonance-ambisonic-output");
         this.ambisonicInput = this.listener.input;
         // Connect audio graph.
-        this.room.output.connect(this.listener.input);
-        this.listener.output.connect(this.output);
-        this.listener.ambisonicOutput.connect(this.ambisonicOutput);
+        connect(this.room, this.listener);
+        connect(this.listener, this.output);
+        connect(this.listener.ambisonicOutput, this.ambisonicOutput);
     }
     getRenderingMode() {
         return this.listener.getRenderingMode();
@@ -79,10 +89,14 @@ export class ResonanceAudio {
     setRenderingMode(mode) {
         this.listener.setRenderingMode(mode);
     }
+    disposed = false;
     dispose() {
-        this.room.output.disconnect(this.listener.input);
-        this.listener.output.disconnect(this.output);
-        this.listener.ambisonicOutput.disconnect(this.ambisonicOutput);
+        if (!this.disposed) {
+            disconnect(this.room);
+            disconnect(this.listener);
+            disconnect(this.listener.ambisonicOutput);
+            this.disposed = true;
+        }
     }
     /**
      * Create a new source for the scene.
@@ -104,7 +118,7 @@ export class ResonanceAudio {
     removeSource(source) {
         const sourceIdx = this._sources.findIndex((s) => s === source);
         if (sourceIdx > -1) {
-            this._sources.splice(sourceIdx, 1);
+            arrayRemoveAt(this._sources, sourceIdx);
             source.dispose();
         }
     }

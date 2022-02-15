@@ -18,6 +18,7 @@
  * ambisonic decoder and the optimized binaural renderer.
  */
 import { mat3, mat4 } from "gl-matrix";
+import { ErsatzAudioNode } from "kudzu/audio";
 import type { IDisposable } from "kudzu/using";
 import { FOARotator } from './foa-rotator';
 import { ChannelMap } from './foa-router';
@@ -33,8 +34,7 @@ export interface FOARendererOptions {
 /**
  * Omnitone FOA renderer class. Uses the optimized convolution technique.
  */
-export declare class FOARenderer implements IDisposable {
-    private context;
+export declare class FOARenderer implements IDisposable, ErsatzAudioNode {
     private config;
     private bypass;
     private router;
@@ -45,11 +45,12 @@ export declare class FOARenderer implements IDisposable {
     /**
      * Omnitone FOA renderer class. Uses the optimized convolution technique.
      */
-    constructor(context: BaseAudioContext, options: FOARendererOptions);
+    constructor(options: FOARendererOptions);
     /**
      * Builds the internal audio graph.
      */
     private buildAudioGraph;
+    private disposed;
     dispose(): void;
     /**
      * Initializes and loads the resource for the renderer.

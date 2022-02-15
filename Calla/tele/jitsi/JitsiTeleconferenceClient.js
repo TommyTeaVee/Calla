@@ -1,13 +1,13 @@
 import { arrayClear } from "kudzu/arrays/arrayClear";
+import { disconnect, Gain, MediaStreamSource } from "kudzu/audio";
+import { Logger } from "kudzu/debugging/Logger";
 import { once } from "kudzu/events/once";
-import { waitFor } from "kudzu/events/waitFor";
-import { splitProgress } from "kudzu/tasks/splitProgress";
+import { sleep } from "kudzu/events/sleep";
+import { isDefined, isNullOrUndefined } from "kudzu/typeChecks";
 import { using } from "kudzu/using";
 import { CallaAudioStreamAddedEvent, CallaAudioStreamRemovedEvent, CallaConferenceFailedEvent, CallaConferenceJoinedEvent, CallaConferenceLeftEvent, CallaParticipantJoinedEvent, CallaParticipantLeftEvent, CallaParticipantNameChangeEvent, CallaTeleconferenceServerConnectedEvent, CallaTeleconferenceServerDisconnectedEvent, CallaTeleconferenceServerFailedEvent, CallaUserAudioMutedEvent, CallaUserVideoMutedEvent, CallaVideoStreamAddedEvent, CallaVideoStreamRemovedEvent, StreamType } from "../../CallaEvents";
 import { ConnectionState } from "../../ConnectionState";
-import { JitsiMetadataClient } from "../../meta/jitsi/JitsiMetadataClient";
 import { addLogger, BaseTeleconferenceClient, DEFAULT_LOCAL_USER_ID } from "../BaseTeleconferenceClient";
-const jQueryPath = "https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/jquery.min.js";
 function encodeUserName(v) {
     try {
         return encodeURIComponent(v);
@@ -17,24 +17,37 @@ function encodeUserName(v) {
     }
 }
 function decodeUserName(v) {
-    try {
-        return decodeURIComponent(v);
+    if (isNullOrUndefined(v)) {
+        return "unknown";
     }
-    catch (exp) {
-        return v;
+    else {
+        try {
+            return decodeURIComponent(v);
+        }
+        catch (exp) {
+            return v;
+        }
     }
 }
+const logger = new Logger();
 export class JitsiTeleconferenceClient extends BaseTeleconferenceClient {
-    constructor(fetcher) {
-        super(fetcher);
-        this.usingDefaultMetadataClient = false;
-        this.host = null;
-        this.bridgeHost = null;
-        this.bridgeMUC = null;
-        this.connection = null;
-        this.conference = null;
-        this.tracks = new Map();
-        this.listenersForObjs = new Map();
+    host;
+    bridgeHost;
+    bridgeMUC;
+    useDefaultMetadataClient = false;
+    enableTeleconference = true;
+    connection = null;
+    conference = null;
+    tracks = new Map();
+    listenersForObjs = new Map();
+    _localAudioInput;
+    curStreamNode = null;
+    constructor(fetcher, audio, host, bridgeHost, bridgeMUC) {
+        super(fetcher, audio);
+        this.host = host;
+        this.bridgeHost = bridgeHost;
+        this.bridgeMUC = bridgeMUC;
+        this._localAudioInput = Gain("local-mic-tap");
     }
     _on(obj, evtName, handler) {
         let objListeners = this.listenersForObjs.get(obj);
@@ -61,31 +74,8 @@ export class JitsiTeleconferenceClient extends BaseTeleconferenceClient {
             objListeners.clear();
         }
     }
-    getDefaultMetadataClient() {
-        this.usingDefaultMetadataClient = true;
-        return new JitsiMetadataClient(this);
-    }
-    async prepare(JITSI_HOST, JVB_HOST, JVB_MUC, onProgress) {
-        if (!this._prepared) {
-            this.host = JITSI_HOST;
-            this.bridgeHost = JVB_HOST;
-            this.bridgeMUC = JVB_MUC;
-            console.info("Connecting to:", this.host);
-            const progs = splitProgress(onProgress, 2);
-            await this.fetcher.loadScript(jQueryPath, () => "jQuery" in globalThis, progs.shift());
-            await this.fetcher.loadScript(`https://${this.host}/libs/lib-jitsi-meet.min.js`, () => "JitsiMeetJS" in globalThis, progs.shift());
-            if (process.env.NODE_ENV === "development") {
-                JitsiMeetJS.setLogLevel(JitsiMeetJS.logLevels.ERROR);
-            }
-            else {
-                JitsiMeetJS.setLogLevel(JitsiMeetJS.logLevels.ERROR);
-            }
-            JitsiMeetJS.init();
-            this._prepared = true;
-        }
-    }
     async connect() {
-        await super.connect();
+        this.setConnectionState(ConnectionState.Connecting);
         const connectionEvents = JitsiMeetJS.events.connection;
         this.connection = new JitsiMeetJS.JitsiConnection(null, null, {
             hosts: {
@@ -117,9 +107,11 @@ export class JitsiTeleconferenceClient extends BaseTeleconferenceClient {
         const connectTask = once(this.connection, connectionEvents.CONNECTION_ESTABLISHED);
         this.connection.connect();
         await connectTask;
+        this.setConnectionState(ConnectionState.Connected);
     }
-    async join(roomName, password) {
-        await super.join(roomName, password);
+    async join(roomName, enableTeleconference) {
+        this.setConferenceState(ConnectionState.Connecting);
+        this.enableTeleconference = enableTeleconference;
         const isoRoomName = roomName.toLocaleLowerCase();
         if (isoRoomName !== this.roomName) {
             if (this.conference) {
@@ -127,11 +119,14 @@ export class JitsiTeleconferenceClient extends BaseTeleconferenceClient {
             }
             this.roomName = isoRoomName;
             this.conference = this.connection.initJitsiConference(this.roomName, {
-                openBridgeChannel: this.usingDefaultMetadataClient,
+                openBridgeChannel: this.useDefaultMetadataClient,
                 p2p: { enabled: false },
-                startVideoMuted: true
+                startVideoMuted: true,
             });
             const conferenceEvents = JitsiMeetJS.events.conference;
+            this.conference.addEventListener(conferenceEvents.DATA_CHANNEL_OPENED, (...params) => {
+                logger.log("DataChannel", ...params);
+            });
             for (const evtName of Object.values(conferenceEvents)) {
                 if (evtName !== "conference.audioLevelsChanged") {
                     addLogger(this.conference, evtName);
@@ -141,11 +136,11 @@ export class JitsiTeleconferenceClient extends BaseTeleconferenceClient {
                 this._on(this.conference, evtName, () => {
                     this.dispatchEvent(new EvtClass());
                     if (extra) {
-                        extra();
+                        extra(evtName);
                     }
                 });
             };
-            const onLeft = async () => {
+            const onLeft = async (evtName) => {
                 this.localUserID = DEFAULT_LOCAL_USER_ID;
                 if (this.tracks.size > 0) {
                     console.warn("><> CALLA <>< ---- there are leftover conference tracks");
@@ -160,6 +155,7 @@ export class JitsiTeleconferenceClient extends BaseTeleconferenceClient {
                     this._off(this.conference);
                     this.conference = null;
                 }
+                console.info(`Left room '${roomName}'. Reason: ${evtName}.`);
             };
             fwd(conferenceEvents.CONFERENCE_ERROR, CallaConferenceFailedEvent, onLeft);
             fwd(conferenceEvents.CONFERENCE_FAILED, CallaConferenceFailedEvent, onLeft);
@@ -168,18 +164,24 @@ export class JitsiTeleconferenceClient extends BaseTeleconferenceClient {
                 const userID = this.conference.myUserId();
                 if (userID) {
                     this.localUserID = userID;
+                    this.setConferenceState(ConnectionState.Connected);
                     this.dispatchEvent(new CallaConferenceJoinedEvent(userID, null));
                 }
             });
-            this._on(this.conference, conferenceEvents.CONFERENCE_LEFT, onLeft);
+            this._on(this.conference, conferenceEvents.CONFERENCE_LEFT, () => onLeft(conferenceEvents.CONFERENCE_LEFT));
             this._on(this.conference, conferenceEvents.USER_JOINED, (id, jitsiUser) => {
-                this.dispatchEvent(new CallaParticipantJoinedEvent(id, decodeUserName(jitsiUser.getDisplayName()), null));
+                const displayName = jitsiUser.getDisplayName();
+                const decodedUserName = decodeUserName(displayName);
+                logger.log(`${conferenceEvents.USER_JOINED}:${id}`, displayName, decodedUserName);
+                this.dispatchEvent(new CallaParticipantJoinedEvent(id, decodedUserName, null));
             });
             this._on(this.conference, conferenceEvents.USER_LEFT, (id) => {
                 this.dispatchEvent(new CallaParticipantLeftEvent(id));
             });
             this._on(this.conference, conferenceEvents.DISPLAY_NAME_CHANGED, (id, displayName) => {
-                this.dispatchEvent(new CallaParticipantNameChangeEvent(id, decodeUserName(displayName)));
+                const decodedUserName = decodeUserName(displayName);
+                logger.log(`${conferenceEvents.DISPLAY_NAME_CHANGED}:${id}`, displayName, decodedUserName);
+                this.dispatchEvent(new CallaParticipantNameChangeEvent(id, decodedUserName));
             });
             const onTrackMuteChanged = (track, muted) => {
                 const userID = track.getParticipantId() || this.localUserID, trackKind = track.getType(), evt = trackKind === StreamType.Audio
@@ -234,13 +236,17 @@ export class JitsiTeleconferenceClient extends BaseTeleconferenceClient {
                 });
             });
             const joinTask = once(this, "conferenceJoined");
-            this.conference.join(password);
+            this.conference.join(null);
             await joinTask;
         }
     }
     async identify(userName) {
         this.localUserName = userName;
-        this.conference.setDisplayName(encodeUserName(userName));
+        const encodedUserName = encodeUserName(userName);
+        await sleep(350);
+        const logger = new Logger();
+        logger.log("identify:" + this.localUserID, userName, encodedUserName);
+        this.conference.setDisplayName(encodedUserName);
     }
     async tryRemoveTrack(userID, kind) {
         const userTracks = this.tracks.get(userID);
@@ -270,39 +276,39 @@ export class JitsiTeleconferenceClient extends BaseTeleconferenceClient {
         }
     }
     async leave() {
-        if (this.conferenceState === ConnectionState.Connecting) {
-            await waitFor(() => this.conferenceState === ConnectionState.Connected);
+        this.setConferenceState(ConnectionState.Disconnecting);
+        try {
+            await this.tryRemoveTrack(this.localUserID, StreamType.Video);
+            await this.tryRemoveTrack(this.localUserID, StreamType.Audio);
+            const leaveTask = once(this, "conferenceLeft");
+            this.conference.leave();
+            await leaveTask;
+            this.setConferenceState(ConnectionState.Disconnected);
         }
-        if (this.conferenceState === ConnectionState.Disconnecting) {
-            await waitFor(() => this.conferenceState === ConnectionState.Disconnected);
+        catch (exp) {
+            console.warn("><> CALLA <>< ---- Failed to leave teleconference.", exp);
         }
-        else if (this.conferenceState === ConnectionState.Connected) {
-            await super.leave();
-            try {
-                await this.tryRemoveTrack(this.localUserID, StreamType.Video);
-                await this.tryRemoveTrack(this.localUserID, StreamType.Audio);
-                const leaveTask = once(this, "conferenceLeft");
-                this.conference.leave();
-                await leaveTask;
-            }
-            catch (exp) {
-                console.warn("><> CALLA <>< ---- Failed to leave teleconference.", exp);
-            }
+        finally {
+            this.conference = null;
+            this.roomName = null;
         }
     }
     async disconnect() {
-        if (this.connectionState === ConnectionState.Connecting) {
-            await waitFor(() => this.connectionState === ConnectionState.Connected);
-        }
-        if (this.connectionState === ConnectionState.Disconnecting) {
-            await waitFor(() => this.connectionState === ConnectionState.Disconnected);
-        }
-        else if (this.connectionState === ConnectionState.Connected) {
-            await super.disconnect();
+        this.setConnectionState(ConnectionState.Disconnecting);
+        if (this.conferenceState === ConnectionState.Connected) {
             await this.leave();
+        }
+        try {
             const disconnectTask = once(this, "serverDisconnected");
             this.connection.disconnect();
             await disconnectTask;
+            this.setConnectionState(ConnectionState.Disconnected);
+        }
+        catch (exp) {
+            console.warn("><> CALLA <>< ---- Failed to disconnect from teleconference server.", exp);
+        }
+        finally {
+            this.connection = null;
         }
     }
     userExists(id) {
@@ -329,70 +335,53 @@ export class JitsiTeleconferenceClient extends BaseTeleconferenceClient {
         }
         return userTracks.get(type);
     }
-    async setAudioInputDevice(device) {
-        await super.setAudioInputDevice(device);
-        const cur = this.getCurrentMediaTrack(StreamType.Audio);
-        if (cur) {
+    async onInputsChanged(evt) {
+        const curAudio = this.getCurrentMediaTrack(StreamType.Audio);
+        if (curAudio) {
             const removeTask = this.getNext("audioRemoved", this.localUserID);
-            this.conference.removeTrack(cur);
+            this.conference.removeTrack(curAudio);
             await removeTask;
         }
-        if (this.conference && this.preferredAudioInputID) {
+        const curVideo = this.getCurrentMediaTrack(StreamType.Video);
+        if (curVideo) {
+            const removeTask = this.getNext("videoRemoved", this.localUserID);
+            this.conference.removeTrack(curVideo);
+            await removeTask;
+        }
+        if (isDefined(this.conference)
+            && isDefined(evt.audio)
+            && this.enableTeleconference) {
             const addTask = this.getNext("audioAdded", this.localUserID);
-            const tracks = await JitsiMeetJS.createLocalTracks({
+            const opts = {
                 devices: ["audio"],
-                micDeviceId: this.preferredAudioInputID,
+                micDeviceId: evt.audio.deviceId,
                 constraints: {
                     autoGainControl: true,
                     echoCancellation: true,
                     noiseSuppression: true
                 }
-            });
+            };
+            if (isDefined(evt.video)) {
+                opts.devices.push("video");
+                opts.cameraDeviceId = evt.video.deviceId;
+            }
+            const tracks = await JitsiMeetJS.createLocalTracks(opts);
             for (const track of tracks) {
+                if (track.getType() === "audio") {
+                    const stream = track.getOriginalStream();
+                    this.devices.currentStream = stream;
+                    if (this.curStreamNode) {
+                        disconnect(this.curStreamNode);
+                    }
+                    this.curStreamNode = MediaStreamSource("local-mic", stream, this.localAudioInput);
+                }
                 this.conference.addTrack(track);
             }
             await addTask;
         }
     }
-    async setVideoInputDevice(device) {
-        await super.setVideoInputDevice(device);
-        const cur = this.getCurrentMediaTrack(StreamType.Video);
-        if (cur) {
-            const removeTask = this.getNext("videoRemoved", this.localUserID);
-            this.conference.removeTrack(cur);
-            await removeTask;
-        }
-        if (this.conference && this.preferredVideoInputID) {
-            const addTask = this.getNext("videoAdded", this.localUserID);
-            const tracks = await JitsiMeetJS.createLocalTracks({
-                devices: ["video"],
-                cameraDeviceId: this.preferredVideoInputID
-            });
-            for (const track of tracks) {
-                this.conference.addTrack(track);
-            }
-            await addTask;
-        }
-    }
-    async getCurrentAudioInputDevice() {
-        const cur = this.getCurrentMediaTrack(StreamType.Audio), devices = await this.getAudioInputDevices(), device = devices.filter((d) => cur != null && d.deviceId === cur.getDeviceId()
-            || cur == null && d.deviceId === this.preferredAudioInputID);
-        if (device.length === 0) {
-            return null;
-        }
-        else {
-            return device[0];
-        }
-    }
-    async getCurrentVideoInputDevice() {
-        const cur = this.getCurrentMediaTrack(StreamType.Video), devices = await this.getVideoInputDevices(), device = devices.filter((d) => cur != null && d.deviceId === cur.getDeviceId()
-            || cur == null && d.deviceId === this.preferredVideoInputID);
-        if (device.length === 0) {
-            return null;
-        }
-        else {
-            return device[0];
-        }
+    get startDevicesImmediately() {
+        return false;
     }
     async toggleAudioMuted() {
         const changeTask = this.getNext("audioMuteStatusChanged", this.localUserID);
@@ -407,7 +396,7 @@ export class JitsiTeleconferenceClient extends BaseTeleconferenceClient {
             }
         }
         else {
-            await this.setPreferredAudioInput(true);
+            await this.devices.enablePreferredAudioInput();
         }
         const evt = await changeTask;
         return evt.muted;
@@ -416,10 +405,11 @@ export class JitsiTeleconferenceClient extends BaseTeleconferenceClient {
         const changeTask = this.getNext("videoMuteStatusChanged", this.localUserID);
         const cur = this.getCurrentMediaTrack(StreamType.Video);
         if (cur) {
-            await this.setVideoInputDevice(null);
+            await this.devices.setVideoInputDevice(null);
         }
         else {
-            await this.setPreferredVideoInput(true);
+            this.devices.needsVideoDevice = true;
+            await this.devices.enablePreferredVideoInput();
         }
         const evt = await changeTask;
         return evt.muted;
@@ -434,6 +424,69 @@ export class JitsiTeleconferenceClient extends BaseTeleconferenceClient {
     }
     async getVideoMuted() {
         return this.isMediaMuted(StreamType.Video);
+    }
+    get localAudioInput() {
+        return this._localAudioInput;
+    }
+    get useHalfDuplex() {
+        return false;
+    }
+    set useHalfDuplex(_v) {
+        console.info("Half-duplex is not available on Jitsi");
+    }
+    get halfDuplexMin() {
+        return 0;
+    }
+    set halfDuplexMin(_v) {
+        console.info("Half-duplex is not available on Jitsi");
+    }
+    get halfDuplexMax() {
+        return 1;
+    }
+    set halfDuplexMax(_v) {
+        console.info("Half-duplex is not available on Jitsi");
+    }
+    get halfDuplexThreshold() {
+        return Number.POSITIVE_INFINITY;
+    }
+    set halfDuplexThreshold(_v) {
+        console.info("Half-duplex is not available on Jitsi");
+    }
+    get halfDuplexAttack() {
+        return 0;
+    }
+    set halfDuplexAttack(_v) {
+        console.info("Half-duplex is not available on Jitsi");
+    }
+    get halfDuplexDecay() {
+        return 0;
+    }
+    set halfDuplexDecay(_v) {
+        console.info("Half-duplex is not available on Jitsi");
+    }
+    get halfDuplexSustain() {
+        return 0;
+    }
+    set halfDuplexSustain(_v) {
+        console.info("Half-duplex is not available on Jitsi");
+    }
+    get halfDuplexHold() {
+        return 0;
+    }
+    set halfDuplexHold(_v) {
+        console.info("Half-duplex is not available on Jitsi");
+    }
+    get halfDuplexRelease() {
+        return 0;
+    }
+    set halfDuplexRelease(_v) {
+        console.info("Half-duplex is not available on Jitsi");
+    }
+    get halfDuplexLevel() {
+        return 0;
+    }
+    get remoteActivityLevel() {
+        return 0;
     }
 }
 //# sourceMappingURL=JitsiTeleconferenceClient.js.map

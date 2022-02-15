@@ -13,11 +13,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { connect, Convolver, Delay, disconnect, Gain } from "kudzu/audio";
 import { DEFAULT_REVERB_BANDWIDTH, DEFAULT_REVERB_DURATIONS, DEFAULT_REVERB_DURATION_MULTIPLIER, DEFAULT_REVERB_FREQUENCY_BANDS, DEFAULT_REVERB_GAIN, DEFAULT_REVERB_MAX_DURATION, DEFAULT_REVERB_PREDELAY, DEFAULT_REVERB_TAIL_ONSET, log, LOG1000, LOG2_DIV2, NUMBER_REVERB_FREQUENCY_BANDS, TWO_PI } from "./utils";
 /**
  * Late-reflections reverberation filter for Ambisonic content.
  */
 export class LateReflections {
+    bandwidthCoeff;
+    tailonsetSamples;
+    context;
+    predelay;
+    convolver;
+    input;
+    output;
     /**
     * Late-reflections reverberation filter for Ambisonic content.
     */
@@ -36,25 +44,29 @@ export class LateReflections {
         this.tailonsetSamples = options.tailonset / 1000;
         // Create nodes.
         this.context = context;
-        this.input = context.createGain();
-        this.predelay = context.createDelay(delaySecs);
-        this.convolver = context.createConvolver();
-        this.output = context.createGain();
+        this.input = Gain("late-reflections-input");
+        this.predelay = Delay("late-reflections-predelay", delaySecs);
+        this.convolver = Convolver("late-reflections-convolver");
+        this.output = Gain("late-reflections-output");
         // Set reverb attenuation.
         this.output.gain.value = options.gain;
         // Disable normalization.
         this.convolver.normalize = false;
         // Connect nodes.
-        this.input.connect(this.predelay);
-        this.predelay.connect(this.convolver);
-        this.convolver.connect(this.output);
+        connect(this.input, this.predelay);
+        connect(this.predelay, this.convolver);
+        connect(this.convolver, this.output);
         // Compute IR using RT60 values.
         this.setDurations(options.durations);
     }
+    disposed = false;
     dispose() {
-        this.input.disconnect(this.predelay);
-        this.predelay.disconnect(this.convolver);
-        this.convolver.disconnect(this.output);
+        if (!this.disposed) {
+            disconnect(this.input);
+            disconnect(this.predelay);
+            disconnect(this.convolver);
+            this.disposed = true;
+        }
     }
     /**
      * Re-compute a new impulse response by providing Multiband RT60 durations.

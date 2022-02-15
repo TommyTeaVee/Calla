@@ -1,30 +1,32 @@
-import { backgroundColor, height, id, styles, width, zIndex } from "kudzu/html/attrs";
+import { htmlHeight, htmlWidth, id } from "kudzu/html/attrs";
+import { backgroundColor, styles, zIndex } from "kudzu/html/css";
 import { onClick, onMouseOut, onMouseOver } from "kudzu/html/evts";
 import { gridPos, row } from "kudzu/html/grid";
-import { Canvas, Div } from "kudzu/html/tags";
+import { Button, Canvas, Div, InputText } from "kudzu/html/tags";
 import { FormDialog } from "./FormDialog";
 import { hide, isOpen } from "./ops";
 const newRowColor = backgroundColor("lightgreen");
 const hoveredColor = backgroundColor("rgba(65, 255, 202, 0.25)");
 const unhoveredColor = backgroundColor("transparent");
 export class UserDirectoryFormWarpToEvent extends Event {
+    id = null;
     constructor() {
         super("warpTo");
-        this.id = null;
     }
 }
 const warpToEvt = new UserDirectoryFormWarpToEvent();
 const ROW_TIMEOUT = 3000;
 export class UserDirectoryForm extends FormDialog {
+    roomName = null;
+    userName = null;
+    usersList;
+    rows = new Map();
+    users = new Map();
+    avatarGs = new Map();
+    lastUser = null;
     constructor() {
-        super("users");
-        this.roomName = null;
-        this.userName = null;
-        this.rows = new Map();
-        this.users = new Map();
-        this.avatarGs = new Map();
-        this.lastUser = null;
-        this.usersList = Div(id("chatUsers"));
+        super("users", "Users");
+        this.content.append(this.usersList = Div(id("chatUsers")), Div(id("chatMessages")), InputText(id("chatEntry")), Button(id("chatSend"), "Send"));
         Object.seal(this);
     }
     async startAsync(roomName, userName) {
@@ -54,7 +56,7 @@ export class UserDirectoryForm extends FormDialog {
             }, ROW_TIMEOUT);
             this.usersList.append(elem);
             this.users.set(user.id, user);
-            this.avatarGs.set(user.id, Canvas(width(32), height(32))
+            this.avatarGs.set(user.id, Canvas(htmlWidth(32), htmlHeight(32))
                 .getContext("2d"));
         }
         const avatar = this.avatarGs.get(user.id).canvas;
@@ -84,7 +86,7 @@ export class UserDirectoryForm extends FormDialog {
             for (let elems of this.rows.values()) {
                 const r = row(rowCount++);
                 for (let elem of elems) {
-                    r.apply(elem);
+                    r.apply(elem.style);
                 }
             }
         }

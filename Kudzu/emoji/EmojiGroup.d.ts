@@ -1,4 +1,11 @@
 import { Emoji } from "./Emoji";
+/**
+ * A shorthand for `new EmojiGroup` that allows for setting optional properties
+ * on the EmojiGroup object.
+ */
+export declare function G(v: string, d: string, o: any, ...r: Emoji[]): EmojiGroup;
+export declare function C(a: any, b: any, altDesc?: string | null): any;
+export declare function J(a: any, b: any, altDesc?: string | null): any;
 export declare class EmojiGroup extends Emoji {
     width: string | null;
     alts: (Emoji | EmojiGroup)[];

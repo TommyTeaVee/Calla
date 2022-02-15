@@ -22,6 +22,7 @@
 
 // Internal dependencies.
 import { vec3 } from "gl-matrix";
+import { ChannelMerger, connect, disconnect, ErsatzAudioNode, Gain } from "kudzu/audio";
 import type { IDisposable } from "kudzu/using";
 import { Dimension } from "./Dimension";
 import { Direction } from "./Direction";
@@ -250,14 +251,14 @@ export interface RoomOptions {
  * Model that manages early and late reflections using acoustic
  * properties and listener position relative to a rectangular room.
  **/
-export class Room implements IDisposable {
+export class Room implements IDisposable, ErsatzAudioNode {
     early: EarlyReflections;
     late: LateReflections;
     speedOfSound: number;
     output: GainNode;
     private _merger: ChannelMergerNode;
 
-    constructor(context: AudioContext, options?: RoomOptions) {
+    constructor(context: BaseAudioContext, options?: RoomOptions) {
         // Use defaults for undefined arguments.
         options = Object.assign({
             listenerPosition: vec3.copy(vec3.create(), DEFAULT_POSITION),
@@ -275,7 +276,7 @@ export class Room implements IDisposable {
             absorptionCoefficients, options.speedOfSound);
 
         // Construct submodules for early and late reflections.
-        this.early = new EarlyReflections(context, {
+        this.early = new EarlyReflections({
             dimensions: options.dimensions,
             coefficients: reflectionCoefficients,
             speedOfSound: options.speedOfSound,
@@ -288,18 +289,22 @@ export class Room implements IDisposable {
         this.speedOfSound = options.speedOfSound;
 
         // Construct auxillary audio nodes.
-        this.output = context.createGain();
-        this.early.output.connect(this.output);
-        this._merger = context.createChannelMerger(4);
+        this.output = Gain("room-output");
+        connect(this.early, this.output);
+        this._merger = ChannelMerger("room-merger", 4);
 
-        this.late.output.connect(this._merger, 0, 0);
-        this._merger.connect(this.output);
+        connect(this.late, this._merger, 0, 0);
+        connect(this._merger, this.output);
     }
 
     dispose(): void {
-        this.early.output.disconnect(this.output);
-        this.late.output.disconnect(this._merger, 0, 0);
-        this._merger.disconnect(this.output);
+        disconnect(this.early);
+        disconnect(this.late);
+        disconnect(this._merger);
+    }
+
+    get input() {
+        return this.early.input;
     }
 
 

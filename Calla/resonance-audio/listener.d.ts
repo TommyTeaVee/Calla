@@ -58,10 +58,11 @@ export declare class Listener implements IDisposable {
     /**
      * Listener model to spatialize sources in an environment.
      */
-    constructor(context: AudioContext, options?: ListenerOptions);
+    constructor(options?: ListenerOptions);
+    private disposed;
+    dispose(): void;
     getRenderingMode(): string;
     setRenderingMode(mode: string): void;
-    dispose(): void;
     /**
      * Set the source's orientation using forward and up vectors.
      */

@@ -1,19 +1,71 @@
+import { TypedEvent, TypedEventBase } from "../events/EventBase";
+import { arrayProgress } from "../tasks/arrayProgress";
 import type { progressCallback } from "../tasks/progressCallback";
-import { assertNever, isFunction, isNumber, isString } from "../typeChecks";
-import type { WorkerMethodMessages } from "./WorkerServer";
-import { WorkerMethodMessageType } from "./WorkerServer";
+import { assertNever, isArray, isDefined, isFunction, isNullOrUndefined, isNumber, isString } from "../typeChecks";
+import type {
+    WorkerClientMessages,
+    WorkerClientMethodCallMessage,
+    WorkerClientPropertySetMessage,
+    WorkerServerErrorMessage,
+    WorkerServerEventMessage,
+    WorkerServerMessages,
+    WorkerServerProgressMessage,
+    WorkerServerPropertyChangedMessage,
+    WorkerServerPropertyInitializedMessage,
+    WorkerServerReturnMessage
+} from "./WorkerMessages";
+import {
+    GET_PROPERTY_VALUES_METHOD,
+    WorkerClientMessageType,
+    WorkerServerMessageType
+} from "./WorkerMessages";
 
-export type workerClientCallback<T> = (...params: any[]) => Promise<T>;
+interface WorkerInvocation {
+    onProgress: progressCallback;
+    resolve: (value: any) => void;
+    reject: (reason?: any) => void;
+    methodName: string;
+}
 
-export class WorkerClient {
+export class WorkerClient<EventsT> extends TypedEventBase<EventsT> {
     static isSupported = "Worker" in globalThis;
 
-    private taskCounter: number = 0;
+    private scriptPath: string;
+    private taskCounter: number;
     private workers: Worker[];
-    private script: string;
-    private methodExists = new Map<string, boolean>();
+    private invocations = new Map<number, WorkerInvocation>();
+    private dispatchMessageResponse: (evt: MessageEvent<WorkerServerMessages>) => void;
+    private propertyValues = new Map<string, any>();
 
-    enabled: boolean = true;
+    readonly ready: Promise<unknown>;
+
+    /**
+     * Creates a new pooled worker method executor.
+     * @param scriptPath - the path to the unminified script to use for the worker
+     */
+    constructor(scriptPath: string);
+
+    /**
+     * Creates a new pooled worker method executor.
+     * @param scriptPath - the path to the unminified script to use for the worker
+     * @param workers - a set of workers that are already running.
+     * @param startTaskCounter - the next task ID that the worker should use.
+     */
+    constructor(scriptPath: string, workers: Worker[], startTaskCounter: number);
+
+    /**
+     * Creates a new pooled worker method executor.
+     * @param scriptPath - the path to the unminified script to use for the worker
+     * @param minScriptPath - the path to the minified script to use for the worker
+     */
+    constructor(scriptPath: string, minScriptPath: string);
+
+    /**
+     * Creates a new pooled worker method executor.
+     * @param scriptPath - the path to the unminified script to use for the worker
+     * @param workerPoolSize - the number of worker threads to create for the pool (defaults to 1)
+     */
+    constructor(scriptPath: string, workerPoolSize: number);
 
     /**
      * Creates a new pooled worker method executor.
@@ -21,88 +73,274 @@ export class WorkerClient {
      * @param minScriptPath - the path to the minified script to use for the worker (optional)
      * @param workerPoolSize - the number of worker threads to create for the pool (defaults to 1)
      */
-    constructor(scriptPath: string);
-    constructor(scriptPath: string, minScriptPath: string);
-    constructor(scriptPath: string, workerPoolSize: number);
     constructor(scriptPath: string, minScriptPath: string, workerPoolSize: number);
-    constructor(scriptPath: string, minScriptPath?: number | string, workerPoolSize: number = 1) {
+    constructor(scriptPath: string, minScriptPathOrWorkers?: number | string | Worker[], workerPoolSizeOrCurTaskCounter?: number) {
+        super();
 
         if (!WorkerClient.isSupported) {
             console.warn("Workers are not supported on this system.");
         }
 
         // Normalize constructor parameters.
-        if (!workerPoolSize) {
-            if (isNumber(minScriptPath)) {
-                workerPoolSize = minScriptPath;
-                minScriptPath = undefined;
-            }
-            else {
-                workerPoolSize = 1;
-            }
+        if (isNumber(minScriptPathOrWorkers)) {
+            workerPoolSizeOrCurTaskCounter = minScriptPathOrWorkers;
+            minScriptPathOrWorkers = undefined;
         }
 
-        if (workerPoolSize < 1) {
+        if (isNullOrUndefined(workerPoolSizeOrCurTaskCounter)) {
+            workerPoolSizeOrCurTaskCounter = navigator.hardwareConcurrency || 4;
+        }
+
+        // Validate parameters
+        if (workerPoolSizeOrCurTaskCounter < 1) {
             throw new Error("Worker pool size must be a postive integer greater than 0");
         }
 
         // Choose which version of the script we're going to load.
         if (process.env.NODE_ENV === "development"
-            || !isString(minScriptPath)) {
-            this.script = scriptPath;
+            || !isString(minScriptPathOrWorkers)) {
+            this.scriptPath = scriptPath;
         }
         else {
-            this.script = minScriptPath;
+            this.scriptPath = minScriptPathOrWorkers;
         }
 
-        this.workers = new Array(workerPoolSize);
+        this.dispatchMessageResponse = (evt: MessageEvent<WorkerServerMessages>) => {
+            const data = evt.data;
+            switch (data.type) {
+                case WorkerServerMessageType.Event:
+                    this.propogateEvent(data);
+                    break;
+                case WorkerServerMessageType.PropertyInit:
+                    this.propertyInit(data);
+                    break;
+                case WorkerServerMessageType.Property:
+                    this.propertyChanged(data);
+                    break;
+                case WorkerServerMessageType.Progress:
+                    this.progressReport(data);
+                    break;
+                case WorkerServerMessageType.Return:
+                    this.methodReturned(data);
+                    break;
+                case WorkerServerMessageType.Error:
+                    this.invocationError(data);
+                    break;
+                default:
+                    assertNever(data);
+            }
+        };
+
+        if (isArray(minScriptPathOrWorkers)) {
+            this.taskCounter = workerPoolSizeOrCurTaskCounter;
+            this.workers = minScriptPathOrWorkers;
+        }
+        else {
+            this.taskCounter = 0;
+            this.workers = new Array(workerPoolSizeOrCurTaskCounter);
+            for (let i = 0; i < workerPoolSizeOrCurTaskCounter; ++i) {
+                this.workers[i] = new Worker(this.scriptPath);
+            }
+        }
+
+        for (const worker of this.workers) {
+            worker.addEventListener("message", this.dispatchMessageResponse);
+        }
+
+        this.ready = this.callMethodOnAll(GET_PROPERTY_VALUES_METHOD);
+    }
+
+    private propogateEvent(data: WorkerServerEventMessage) {
+        const evt = new TypedEvent(data.eventName);
+        this.dispatchEvent(Object.assign(evt, data.data));
+    }
+
+    private propertyInit(data: WorkerServerPropertyInitializedMessage) {
+        if (this.propertyValues.has(data.propertyName)) {
+            this.setProperty(
+                data.propertyName,
+                this.propertyValues.get(data.propertyName));
+        }
+        else {
+            this.propertyValues.set(data.propertyName, data.value);
+        }
+    }
+
+    private propertyChanged(data: WorkerServerPropertyChangedMessage) {
+        this.propertyValues.set(data.propertyName, data.value);
+    }
+
+    private progressReport(data: WorkerServerProgressMessage) {
+        const invocation = this.invocations.get(data.taskID);
+        const { onProgress } = invocation;
+        if (isFunction(onProgress)) {
+            onProgress(data.soFar, data.total, data.msg);
+        }
+    }
+
+    private methodReturned(data: WorkerServerReturnMessage) {
+        const messageHandler = this.removeInvocation(data.taskID);
+        const { resolve } = messageHandler;
+        resolve(data.returnValue);
+    }
+
+    private invocationError(data: WorkerServerErrorMessage) {
+        const messageHandler = this.removeInvocation(data.taskID);
+        const { reject, methodName } = messageHandler;
+        reject(new Error(`${methodName} failed. Reason: ${data.errorMessage}`));
     }
 
     /**
-     * Execute a method on the worker thread.
-     * @param methodName - the name of the method to execute.
-     * @param params - the parameters to pass to the method.
-     */
-    execute<T>(methodName: string, params: any[]): Promise<T>;
+     * When the invocation has errored, we want to stop listening to the worker
+     * message channel so we don't eat up processing messages that have no chance
+     * ever pertaining to the invocation.
+     **/
+    private removeInvocation(taskID: number) {
+        const invocation = this.invocations.get(taskID);
+        this.invocations.delete(taskID);
+        return invocation;
+    }
 
     /**
-     * Execute a method on the worker thread.
-     * @param methodName - the name of the method to execute.
-     * @param params - the parameters to pass to the method.
-     * @param transferables - any values in any of the parameters that should be transfered instead of copied to the worker thread.
+     * Invokes the given method on one particular worker thread.
+     * @param worker
+     * @param taskID
+     * @param methodName
+     * @param params
+     * @param transferables
+     * @param onProgress
      */
-    execute<T>(methodName: string, params: any[], transferables: Transferable[]): Promise<T>;
+    private callMethodOnWorker<T>(worker: Worker, taskID: number, methodName: string, params?: any[], transferables?: Transferable[], onProgress?: progressCallback): Promise<T> {
+        return new Promise((resolve, reject) => {
+            const invocation: WorkerInvocation = {
+                onProgress,
+                resolve,
+                reject,
+                methodName
+            };
+
+            this.invocations.set(taskID, invocation);
+
+            let message: WorkerClientMethodCallMessage = null;
+            if (isDefined(params)) {
+                message = {
+                    type: WorkerClientMessageType.MethodCall,
+                    taskID,
+                    methodName,
+                    params
+                };
+            }
+            else {
+                message = {
+                    type: WorkerClientMessageType.MethodCall,
+                    taskID,
+                    methodName
+                };
+            }
+
+            this.postMessage(worker, message, transferables);
+        });
+    }
+
+    private postMessage(worker: Worker, message: WorkerClientMessages, transferables?: Transferable[]) {
+        if (isDefined(transferables)) {
+            worker.postMessage(message, transferables);
+        }
+        else {
+            worker.postMessage(message);
+        }
+    }
 
     /**
-     * Execute a method on the worker thread.
+     * Set a property value on all of the worker threads.
+     * @param propertyName - the name of the property to set.
+     * @param value - the value to which to set the property.
+     */
+    protected setProperty<T>(propertyName: string, value: T): void {
+        if (!WorkerClient.isSupported) {
+            throw new Error("Workers are not supported on this system.");
+        }
+
+        this.propertyValues.set(propertyName, value);
+
+        const message: WorkerClientPropertySetMessage = {
+            type: WorkerClientMessageType.PropertySet,
+            taskID: this.taskCounter++,
+            propertyName,
+            value
+        };
+
+        for (const worker of this.workers) {
+            this.postMessage(worker, message);
+        }
+    }
+
+    /**
+     * Retrieve the most recently cached value for a given property.
+     * @param propertyName - the name of the property to get.
+     */
+    protected getProperty<T>(propertyName: string): T {
+        return this.propertyValues.get(propertyName) as T;
+    }
+
+    /**
+     * Execute a method on a round-robin selected worker thread.
+     * @param methodName - the name of the method to execute.
+     * @param onProgress - a callback for receiving progress reports on long-running invocations.
+     */
+    protected callMethod<T>(methodName: string, onProgress?: progressCallback): Promise<T>;
+
+    /**
+     * Execute a method on a round-robin selected worker thread.
      * @param methodName - the name of the method to execute.
      * @param params - the parameters to pass to the method.
      * @param onProgress - a callback for receiving progress reports on long-running invocations.
      */
-    execute<T>(methodName: string, params: any[], onProgress?: progressCallback): Promise<T>;
+    protected callMethod<T>(methodName: string, params: any[], onProgress?: progressCallback): Promise<T>;
 
     /**
-     * Execute a method on the worker thread.
+     * Execute a method on a round-robin selected worker thread.
      * @param methodName - the name of the method to execute.
      * @param params - the parameters to pass to the method.
      * @param transferables - any values in any of the parameters that should be transfered instead of copied to the worker thread.
      * @param onProgress - a callback for receiving progress reports on long-running invocations.
      */
-    execute<T>(methodName: string, params: any[], transferables: any = null, onProgress: any = null): Promise<T | undefined> {
+    protected callMethod<T>(methodName: string, params: any[], transferables: Transferable[], onProgress?: progressCallback): Promise<T>;
+
+    /**
+     * Execute a method on a round-robin selected worker thread.
+     * @param methodName - the name of the method to execute.
+     * @param params - the parameters to pass to the method.
+     * @param transferables - any values in any of the parameters that should be transfered instead of copied to the worker thread.
+     * @param onProgress - a callback for receiving progress reports on long-running invocations.
+     */
+    protected callMethod<T>(methodName: string, params?: any[] | progressCallback, transferables?: Transferable[] | progressCallback, onProgress?: progressCallback): Promise<T | undefined> {
         if (!WorkerClient.isSupported) {
             return Promise.reject(new Error("Workers are not supported on this system."));
         }
 
-        if (!this.enabled) {
-            console.warn("Workers invocations have been disabled.");
-            return Promise.resolve(undefined);
+        // Normalize method parameters.
+        let parameters: any[] = null;
+        let tfers: Transferable[] = null;
+
+        if (isFunction(params)) {
+            onProgress = params;
+            params = null;
+            transferables = null;
         }
 
-        // Normalize method parameters.
         if (isFunction(transferables)
             && !onProgress) {
             onProgress = transferables;
             transferables = null;
+        }
+
+        if (isArray(params)) {
+            parameters = params;
+        }
+
+        if (isArray(transferables)) {
+            tfers = transferables;
         }
 
         // taskIDs help us keep track of return values.
@@ -111,88 +349,82 @@ export class WorkerClient {
         // Workers are pooled, so the modulus selects them in a round-robin fashion.
         const workerID = taskID % this.workers.length;
 
-        // Workers are lazily created
-        if (!this.workers[workerID]) {
-            this.workers[workerID] = new Worker(this.script);
-        }
-
         const worker = this.workers[workerID];
 
-        return new Promise((resolve, reject) => {
-            // When the invocation is complete, we want to stop listening to the worker
-            // message channel so we don't eat up processing messages that have no chance
-            // over pertaining to the invocation.
-            const cleanup = () => {
-                worker.removeEventListener("message", dispatchMessageResponse);
-            };
-
-            const dispatchMessageResponse = (evt: MessageEvent<WorkerMethodMessages>) => {
-                const data = evt.data;
-
-                // Did this response message match the current invocation?
-                if (data.taskID === taskID) {
-                    switch (data.methodName) {
-                        case WorkerMethodMessageType.Progress:
-                            if (isFunction(onProgress)) {
-                                onProgress(data.soFar, data.total, data.msg);
-                            }
-                            break;
-                        case WorkerMethodMessageType.Return:
-                            cleanup();
-                            resolve(undefined);
-                            break;
-                        case WorkerMethodMessageType.ReturnValue:
-                            cleanup();
-                            resolve(data.returnValue);
-                            break;
-                        case WorkerMethodMessageType.Error:
-                            cleanup();
-                            reject(new Error(`${methodName} failed. Reason: ${data.errorMessage}`));
-                            break;
-                        default: assertNever(data);
-                    }
-                }
-            };
-
-            worker.addEventListener("message", dispatchMessageResponse);
-
-            if (transferables) {
-                worker.postMessage({
-                    taskID,
-                    methodName,
-                    params
-                }, transferables);
-            }
-            else {
-                worker.postMessage({
-                    taskID,
-                    methodName,
-                    params
-                });
-            }
-        });
+        return this.callMethodOnWorker<T>(
+            worker,
+            taskID,
+            methodName,
+            parameters,
+            tfers,
+            onProgress);
     }
 
     /**
-     * Creates a function that can optionally choose to invoke either the provided
-     * worker method, or a UI-thread fallback, if this worker dispatcher is not enabled.
-     * @param workerCall
-     * @param localCall
+     * Execute a method on all of the worker threads.
+     * @param methodName - the name of the method to execute.
+     * @param onProgress - a callback for receiving progress reports on long-running invocations.
      */
-    createExecutor<T>(methodName: string, workerCall: workerClientCallback<T>, localCall: workerClientCallback<T>): workerClientCallback<T> {
-        return async (...params: any[]) => {
-            if (!this.methodExists.has(methodName)) {
-                this.methodExists.set(methodName, await this.execute("methodExists", [methodName]));
-            }
+    protected callMethodOnAll<T>(methodName: string, onProgress?: progressCallback): Promise<T[]>;
 
-            const exists = this.methodExists.get(methodName);
+    /**
+     * Execute a method on all of the worker threads.
+     * @param methodName - the name of the method to execute.
+     * @param params - the parameters to pass to the method.
+     * @param onProgress - a callback for receiving progress reports on long-running invocations.
+     */
+    protected callMethodOnAll<T>(methodName: string, params: any[], onProgress?: progressCallback): Promise<T[]>;
 
-            if (WorkerClient.isSupported && this.enabled && exists) {
-                return await workerCall(...params);
-            }
-            else {
-                return await localCall(...params);
-            }
-        };
+    /**
+     * Execute a method on all of the worker threads.
+     * @param methodName - the name of the method to execute.
+     * @param params - the parameters to pass to the method.
+     * @param onProgress - a callback for receiving progress reports on long-running invocations.
+     */
+    protected async callMethodOnAll<T>(methodName: string, params?: any[] | progressCallback, onProgress?: progressCallback): Promise<T[]> {
+        if (!WorkerClient.isSupported) {
+            return Promise.reject(new Error("Workers are not supported on this system."));
+        }
+
+        if (isFunction(params)) {
+            onProgress = params;
+            params = null;
+        }
+
+        let parameters: any[] = null;
+        if (isArray(params)) {
+            parameters = params;
+        }
+
+        const rootTaskID = this.taskCounter;
+        this.taskCounter += this.workers.length;
+
+        return await arrayProgress(
+            onProgress,
+            this.workers,
+            (worker, subProgress, i) =>
+                this.callMethodOnWorker<T>(
+                    worker,
+                    rootTaskID + i,
+                    methodName,
+                    parameters,
+                    null,
+                    subProgress));
+    }
+
+    /**
+     * Remove one of the workers from the worker pool and create a new instance
+     * of the workerized object for just that worker. This is useful for creating
+     * workers that cache network requests in memory.
+     **/
+    getDedicatedClient() {
+        if (this.workers.length === 1) {
+            throw new Error("Can't create a dedicated fetcher from a dedicated fetcher.");
+        }
+
+        const Class = Object.getPrototypeOf(this).constructor;
+        const worker = this.workers.pop();
+        worker.removeEventListener("message", this.dispatchMessageResponse);
+        return new Class(this.scriptPath, [worker], this.taskCounter + 1);
     }
 }

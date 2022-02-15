@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { ChannelMerger, ChannelSplitter, connect, disconnect } from "kudzu/audio";
 /**
  * @file An audio channel router to resolve different channel layouts between
  * browsers.
@@ -39,18 +40,18 @@ const ChannelMaps = {
  * Channel router for FOA stream.
  */
 export class FOARouter {
+    _splitter;
+    _merger;
+    input;
+    output;
+    _channelMap;
     /**
      * Channel router for FOA stream.
-     * @param context - Associated AudioContext.
      * @param channelMap - Routing destination array.
      */
-    constructor(context, channelMap) {
-        this._context = context;
-        this._splitter = this._context.createChannelSplitter(4);
-        this._merger = this._context.createChannelMerger(4);
-        // input/output proxy.
-        this.input = this._splitter;
-        this.output = this._merger;
+    constructor(channelMap) {
+        this.input = this._splitter = ChannelSplitter("foa-router-splitter", 4);
+        this.output = this._merger = ChannelMerger("foa-router-merger", 4);
         this.setChannelMap(channelMap || ChannelMap.Default);
     }
     /**
@@ -64,17 +65,16 @@ export class FOARouter {
         else {
             this._channelMap = ChannelMaps[channelMap];
         }
-        this._splitter.disconnect();
-        this._splitter.connect(this._merger, 0, this._channelMap[0]);
-        this._splitter.connect(this._merger, 1, this._channelMap[1]);
-        this._splitter.connect(this._merger, 2, this._channelMap[2]);
-        this._splitter.connect(this._merger, 3, this._channelMap[3]);
+        for (let i = 0; i < this._channelMap.length; ++i) {
+            connect(this._splitter, this._merger, i, this._channelMap[i]);
+        }
     }
+    disposed = false;
     dispose() {
-        this._splitter.disconnect(this._merger, 0, this._channelMap[0]);
-        this._splitter.disconnect(this._merger, 1, this._channelMap[1]);
-        this._splitter.disconnect(this._merger, 2, this._channelMap[2]);
-        this._splitter.disconnect(this._merger, 3, this._channelMap[3]);
+        if (!this.disposed) {
+            disconnect(this._splitter);
+            this.disposed = true;
+        }
     }
 }
 //# sourceMappingURL=foa-router.js.map

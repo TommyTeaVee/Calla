@@ -23,6 +23,7 @@
 
 // Internal dependencies.
 import { vec3 } from "gl-matrix";
+import { connect, disconnect, Gain } from "kudzu/audio";
 import type { IDisposable } from "kudzu/using";
 import { Attenuation } from './attenuation';
 import type { AttenuationRolloff } from "./AttenuationRolloff";
@@ -189,50 +190,49 @@ export class Source implements IDisposable {
 
         // Create audio nodes.
         let context = scene.context;
-        this.input = context.createGain();
+        this.input = Gain("source-input");
         this.directivity = new Directivity(context, {
             alpha: options.alpha,
             sharpness: options.sharpness,
         });
-        this.toEarly = context.createGain();
-        this.toLate = context.createGain();
-        this.attenuation = new Attenuation(context, {
+        this.toEarly = Gain("source-to-early");
+        this.toLate = Gain("source-to-late");
+        this.attenuation = new Attenuation({
             minDistance: options.minDistance,
             maxDistance: options.maxDistance,
             rolloff: options.rolloff,
         });
-        this.encoder = new Encoder(context, {
+        this.encoder = new Encoder({
             ambisonicOrder: scene.ambisonicOrder,
             sourceWidth: options.sourceWidth,
         });
 
         // Connect nodes.
-        this.input.connect(this.toLate);
-        this.toLate.connect(scene.room.late.input);
+        connect(this.input, this.toLate);
+        connect(this.toLate, scene.room.late);
 
-        this.input.connect(this.attenuation.input);
-        this.attenuation.output.connect(this.toEarly);
-        this.toEarly.connect(scene.room.early.input);
+        connect(this.input, this.attenuation);
+        connect(this.attenuation, this.toEarly);
+        connect(this.toEarly, scene.room.early);
 
-        this.attenuation.output.connect(this.directivity.input);
-        this.directivity.output.connect(this.encoder.input);
-
-        this.encoder.output.connect(scene.listener.input);
+        connect(this.attenuation, this.directivity);
+        connect(this.directivity, this.encoder);
 
         // Assign initial conditions.
         this.setPosition(options.position);
         this.input.gain.value = options.gain;
     }
 
+    get output() {
+        return this.encoder.output;
+    }
+
     dispose(): void {
-        this.encoder.output.disconnect(this.scene.listener.input);
-        this.directivity.output.disconnect(this.encoder.input);
-        this.attenuation.output.disconnect(this.directivity.input);
-        this.toEarly.disconnect(this.scene.room.early.input);
-        this.attenuation.output.disconnect(this.toEarly);
-        this.input.disconnect(this.attenuation.input);
-        this.toLate.disconnect(this.scene.room.late.input);
-        this.input.disconnect(this.toLate);
+        disconnect(this.directivity);
+        disconnect(this.attenuation);
+        disconnect(this.toEarly);
+        disconnect(this.input);
+        disconnect(this.toLate);
 
         this.encoder.dispose();
     }

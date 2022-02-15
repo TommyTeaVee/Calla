@@ -1,18 +1,23 @@
 import type { vec3 } from "gl-matrix";
 import { TypedEvent, TypedEventBase } from "kudzu/events/EventBase";
-import { IFetcher } from "kudzu/io/IFetcher";
+import type { IFetcher } from "kudzu/io/IFetcher";
 import type { progressCallback } from "kudzu/tasks/progressCallback";
+import { DeviceManager } from "../devices/DeviceManager";
 import { AudioActivityEvent } from "./AudioActivityEvent";
-import { AudioSource } from "./AudioSource";
-import type { BaseNode } from "./spatializers/nodes/BaseNode";
+import { AudioDestination } from "./destinations/AudioDestination";
+import type { BaseListener } from "./destinations/spatializers/BaseListener";
+import { AudioStreamSource } from "./sources/AudioStreamSource";
+import type { IPlayableSource } from "./sources/IPlayableSource";
+import { BaseEmitter } from "./sources/spatializers/BaseEmitter";
 interface AudioManagerEvents {
     audioReady: TypedEvent<"audioReady">;
     audioActivity: AudioActivityEvent;
 }
 export declare enum SpatializerType {
-    Low = "volumescale",
-    Medium = "webaudiopanner",
-    High = "resonance"
+    None = "none",
+    Low = "low",
+    Medium = "medium",
+    High = "high"
 }
 /**
  * A manager of audio sources, destinations, and their spatialization.
@@ -22,21 +27,20 @@ export declare class AudioManager extends TypedEventBase<AudioManagerEvents> {
     private maxDistance;
     private rolloff;
     private _algorithm;
-    private transitionTime;
+    transitionTime: number;
     private _offsetRadius;
     private clips;
     private users;
-    private analysers;
+    localUserID: string;
     private sortedUserIDs;
-    private localUserID;
-    private listener;
-    private audioContext;
-    private element;
+    localOutput: AudioDestination;
+    listener: BaseListener;
     private destination;
-    private _audioOutputDeviceID;
-    private onAudioActivity;
     private fetcher;
-    private type;
+    private _type;
+    devices: DeviceManager;
+    private _ready;
+    get ready(): Promise<void>;
     /**
      * Creates a new manager of audio sources, destinations, and their spatialization.
      **/
@@ -44,30 +48,18 @@ export declare class AudioManager extends TypedEventBase<AudioManagerEvents> {
     get offsetRadius(): number;
     set offsetRadius(v: number);
     get algorithm(): string;
-    addEventListener<K extends string & keyof AudioManagerEvents>(type: K, callback: (evt: Event & AudioManagerEvents[K]) => any, options?: AddEventListenerOptions): void;
-    get ready(): boolean;
-    /**
-     * Perform the audio system initialization, after a user gesture
-     **/
-    start(): Promise<void>;
+    protected checkAddEventListener<T extends Event>(type: string, callback: (evt: T) => any): boolean;
+    get isReady(): boolean;
+    get isRunning(): boolean;
     update(): void;
-    /**
-     * If no audio context is currently available, creates one, and initializes the
-     * spatialization of its listener.
-     *
-     * If WebAudio isn't available, a mock audio context is created that provides
-     * ersatz playback timing.
-     **/
-    createContext(): void;
-    getAudioOutputDeviceID(): string;
-    setAudioOutputDeviceID(deviceID: string): Promise<void>;
+    get type(): SpatializerType;
+    set type(type: SpatializerType);
     /**
      * Creates a spatialzer for an audio source.
-     * @param id
-     * @param source - the audio element that is being spatialized.
      * @param spatialize - whether or not the audio stream should be spatialized. Stereo audio streams that are spatialized will get down-mixed to a single channel.
+     * @param isRemoteStream - whether or not the audio stream is coming from a remote user.
      */
-    createSpatializer(id: string, source: AudioNode, spatialize: boolean): BaseNode;
+    createSpatializer(spatialize: boolean, isRemoteStream: boolean): BaseEmitter;
     /**
      * Gets the current playback time.
      */
@@ -75,15 +67,15 @@ export declare class AudioManager extends TypedEventBase<AudioManagerEvents> {
     /**
      * Create a new user for audio processing.
      */
-    createUser(id: string): AudioSource;
+    createUser(id: string): AudioStreamSource;
     /**
      * Create a new user for the audio listener.
      */
-    createLocalUser(id: string): AudioSource;
+    setLocalUserID(id: string): AudioDestination;
     /**
      * Creates a new sound effect from a series of fallback paths
      * for media files.
-     * @param name - the name of the sound effect, to reference when executing playback.
+     * @param id - the name of the sound effect, to reference when executing playback.
      * @param looping - whether or not the sound effect should be played on loop.
      * @param autoPlaying - whether or not the sound effect should be played immediately.
      * @param spatialize - whether or not the sound effect should be spatialized.
@@ -91,7 +83,10 @@ export declare class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * @param path - a path for loading the media of the sound effect.
      * @param onProgress - an optional callback function to use for tracking progress of loading the clip.
      */
-    createClip(name: string, looping: boolean, autoPlaying: boolean, spatialize: boolean, vol: number, path: string, onProgress?: progressCallback): Promise<AudioSource>;
+    createClip(id: string, looping: boolean, autoPlaying: boolean, spatialize: boolean, vol: number, path: string, onProgress?: progressCallback): Promise<IPlayableSource>;
+    private getAudioBlob;
+    private createAudioElementSource;
+    private createAudioBufferSource;
     hasClip(name: string): boolean;
     /**
      * Plays a named sound effect.
@@ -100,19 +95,14 @@ export declare class AudioManager extends TypedEventBase<AudioManagerEvents> {
     playClip(name: string): Promise<void>;
     stopClip(name: string): void;
     /**
-     * Get an audio source.
-     * @param sources - the collection of audio sources from which to retrieve.
-     * @param id - the id of the audio source to get
-     **/
-    private getSource;
-    /**
      * Get an existing user.
      */
-    getUser(id: string): AudioSource;
+    getUser(id: string): AudioStreamSource;
     /**
      * Get an existing audio clip.
      */
-    getClip(id: string): AudioSource;
+    getClip(id: string): IPlayableSource;
+    renameClip(id: string, newID: string): void;
     /**
      * Remove an audio source from audio processing.
      * @param sources - the collection of audio sources from which to remove.
@@ -126,9 +116,9 @@ export declare class AudioManager extends TypedEventBase<AudioManagerEvents> {
     /**
      * Remove an audio clip from audio processing.
      **/
-    removeClip(id: string): void;
+    removeClip(id: string): IPlayableSource;
     private createSourceFromStream;
-    setUserStream(id: string, stream: MediaStream): Promise<void>;
+    setUserStream(id: string, stream: MediaStream): void;
     updateUserOffsets(): void;
     /**
      * Sets parameters that alter spatialization.
@@ -138,14 +128,12 @@ export declare class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * Get a pose, normalize the transition time, and perform on operation on it, if it exists.
      * @param sources - the collection of poses from which to retrieve the pose.
      * @param id - the id of the pose for which to perform the operation.
-     * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
      * @param poseCallback
      */
     private withPose;
     /**
      * Get a user pose, normalize the transition time, and perform on operation on it, if it exists.
      * @param id - the id of the user for which to perform the operation.
-     * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
      * @param poseCallback
      */
     private withUser;
@@ -176,7 +164,7 @@ export declare class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * @param uz - the lateral component of the up vector.
      * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
      **/
-    setUserPose(id: string, px: number, py: number, pz: number, fx: number, fy: number, fz: number, ux: number, uy: number, uz: number, dt?: number): void;
+    setUserPose(id: string, px: number, py: number, pz: number, fx: number, fy: number, fz: number, ux: number, uy: number, uz: number): void;
     /**
      * Get an audio clip pose, normalize the transition time, and perform on operation on it, if it exists.
      * @param id - the id of the audio clip for which to perform the operation.
@@ -190,9 +178,8 @@ export declare class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * @param x - the horizontal component of the position.
      * @param y - the vertical component of the position.
      * @param z - the lateral component of the position.
-     * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
      **/
-    setClipPosition(id: string, x: number, y: number, z: number, dt?: number): void;
+    setClipPosition(id: string, x: number, y: number, z: number): void;
     /**
      * Set the orientation of an audio clip.
      * @param id - the id of the audio clip for which to set the position.
@@ -202,9 +189,8 @@ export declare class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * @param ux - the horizontal component of the up vector.
      * @param uy - the vertical component of the up vector.
      * @param uz - the lateral component of the up vector.
-     * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
      **/
-    setClipOrientation(id: string, fx: number, fy: number, fz: number, ux: number, uy: number, uz: number, dt?: number): void;
+    setClipOrientation(id: string, fx: number, fy: number, fz: number, ux: number, uy: number, uz: number): void;
     /**
      * Set the position and orientation of an audio clip.
      * @param id - the id of the audio clip for which to set the position.
@@ -217,8 +203,7 @@ export declare class AudioManager extends TypedEventBase<AudioManagerEvents> {
      * @param ux - the horizontal component of the up vector.
      * @param uy - the vertical component of the up vector.
      * @param uz - the lateral component of the up vector.
-     * @param dt - the amount of time to take to make the transition. Defaults to this AudioManager's `transitionTime`.
      **/
-    setClipPose(id: string, px: number, py: number, pz: number, fx: number, fy: number, fz: number, ux: number, uy: number, uz: number, dt?: number): void;
+    setClipPose(id: string, px: number, py: number, pz: number, fx: number, fy: number, fz: number, ux: number, uy: number, uz: number): void;
 }
 export {};
